@@ -7,11 +7,13 @@
 //! - 配置存在但无效 → 打印一行 warning，什么都不注册，返回 0；不回退、不中断加载。
 
 pub mod config;
+pub mod env_cache;
 pub mod job;
 pub mod output;
+pub mod settings;
 pub mod tools;
 
-use crate::features::msys2_bash::tools::result::error_result;
+use crate::features::msys2_shell::tools::result::error_result;
 use rpi_plugin_sdk::callbacks::free_string as plugin_free_string;
 use rpi_plugin_sdk::{
     PluginApi, StableToolSchema, StbString, StbStringRef, StepHandle, StepResult, ToolPartialCb,
@@ -26,12 +28,19 @@ use std::sync::Arc;
 /// `msys2-bash` feature 的注册入口。
 ///
 /// 参数：`api` 宿主的插件 API 表。
-/// 返回：恒为 `0`——配置缺失或无效都只是"不启用"，不属于插件加载失败。
+/// 返回：恒为 `0`——平台不符、配置缺失或无效都只是"不启用"，不属于插件加载失败。
 pub fn register(api: &PluginApi) -> i32 {
-    // 第一步：加载配置。没有配置文件 = 未启用，保持内置 bash 行为。
+    // 第一步：平台检查。本 feature 依赖 MSYS2（Windows 专属：`taskkill /F /T` 杀进程树、
+    // `C:\msys64` 路径布局、`.exe` 后缀），非 Windows 平台直接不生效，
+    // 且不去读配置、不产生任何诊断噪音。
+    if !cfg!(target_os = "windows") {
+        return 0;
+    }
+
+    // 第二步：加载配置。没有配置段 = 未启用，保持内置 bash 行为。
     let config = match config::load_config() {
         Ok(Some(config)) => config,
-        // 三个路径都没有配置：静默跳过（debug 级信息，宿主 stderr 通常不可见）。
+        // settings.json 不存在或没有 msys2Bash 段：静默跳过。
         Ok(None) => return 0,
         // 配置存在但无效：一行 warning，然后不注册任何工具。
         Err(reason) => {
@@ -40,13 +49,13 @@ pub fn register(api: &PluginApi) -> i32 {
         }
     };
 
-    // 第二步：宿主是否提供工具注册槽位。缺失时同样只是"不启用"。
+    // 第三步：宿主是否提供工具注册槽位。缺失时同样只是"不启用"。
     let Some(register_tool) = api.register_tool else {
         eprintln!("rpi-opencode: msys2-bash disabled: host has no tool registration slot");
         return 0;
     };
 
-    // 第三步：初始化全局 job manager（配置有效期 = 进程生命周期）。
+    // 第四步：初始化全局 job manager（配置有效期 = 进程生命周期）。
     if !job::init_manager(config.max_jobs) {
         eprintln!("rpi-opencode: msys2-bash disabled: job manager already initialized");
         return 0;
@@ -56,7 +65,7 @@ pub fn register(api: &PluginApi) -> i32 {
         return 0;
     }
 
-    // 第四步：依次注册四个工具。任一失败即停止并回报（不留半套工具）。
+    // 第五步：依次注册四个工具。任一失败即停止并回报（不留半套工具）。
     for spec in TOOL_SPECS {
         let rc = register_one(register_tool, spec);
         if rc != 0 {
@@ -81,10 +90,15 @@ pub fn register(api: &PluginApi) -> i32 {
     }
 
     eprintln!(
-        "rpi-opencode: msys2-bash enabled (shell={}, wait={}s, timeout={}s)",
+        "rpi-opencode: msys2-bash enabled (config={}, shell={}, wait={}s, timeout={}s, loginShell={}, envFrom={}, envVars={}, captureTimeout={}s)",
+        config.source.display(),
         config.shell.display(),
         config.wait_seconds,
-        config.default_timeout_seconds
+        config.default_timeout_seconds,
+        config.login_shell,
+        config.env_from.as_str(),
+        config.login_env.len(),
+        env_cache::capture_timeout_seconds()
     );
     0
 }

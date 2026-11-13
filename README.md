@@ -59,11 +59,16 @@ rpi 原生 Rust `cdylib` 插件，包含两个互相独立的能力：
 
 ### 配置文件就是开关
 
+配置写在 rpi **全局 `settings.json`** 的 `msys2Bash` 段里，**不需要额外的配置文件**。
+
 | 情形 | 行为 |
 | --- | --- |
-| 找到配置且校验通过 | 注册 `bash`（**覆盖内置 bash**）+ `get_cmd_result` + `kill_cmd` + `list_cmds` |
-| 三个路径都没有配置 | 不注册任何工具，内置 Git Bash 原样保留 |
-| 配置存在但无效 | 打印一行 warning，不注册任何工具；不回退 Git Bash、不中断插件加载 |
+| `settings.json` 有 `msys2Bash` 段且校验通过 | 注册 `bash`（**覆盖内置 bash**）+ `get_cmd_result` + `kill_cmd` + `list_cmds` |
+| `settings.json` 不存在，或没有 `msys2Bash` 段 | 不注册任何工具，内置 Git Bash 原样保留 |
+| `msys2Bash` 段存在但无效 | 打印一行 warning，不注册任何工具；不回退 Git Bash、不中断插件加载 |
+
+只读**全局** agent 目录（`~/.rpi/agent/settings.json`），**不读**项目级 `.rpi/settings.json`，
+避免同一份工具配置随项目漂移。旧版的独立配置文件 `msys2-bash.json` **已不再读取**。
 
 ### 启用后的 4 个工具
 
@@ -93,6 +98,40 @@ rpi 原生 Rust `cdylib` 插件，包含两个互相独立的能力：
 | `kill_cmd` | 被 `taskkill /F /T` 杀掉 | 能，状态为 `killed` |
 
 `kill_cmd` 幂等：命令已结束时返回 no-op，不报错。
+
+### 启动性能：非 login shell + 环境变量注入
+
+这是本 feature 的关键设计，默认开启，**不需要任何配置**。
+
+MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、`which`、
+`uname`、`hostname` 等），单次命令实测多花 **约 540-640ms**；而非 login shell（`bash -c`）
+只要约 63ms。
+
+因此插件在**启动期捕获一次**目标 shell 的完整环境变量，写进磁盘缓存；之后每条命令
+都用 `-c` 启动并注入这份环境，既拿到完整 PATH / 自定义变量，又不重复付 profile 的代价。
+
+| 路径 | 单次 `bash` 启动 |
+| --- | --- |
+| 改造前（每次 `-lc`） | ~682 ms |
+| 改造后（`-c` + 注入缓存 env） | **~66 ms** |
+
+捕获用哪个 shell 由 `envFrom` 决定，默认 `bash`，可设为 `fish` 继承你 fish 配置里的
+导出变量（fish 在非 login 模式下同样会 source `~/.config/fish/config.fish`）：
+
+```json
+{ "msys2Bash": { "msys2Root": "C:\\msys64", "envFrom": "fish" } }
+```
+
+实测 `fish -c env` 约 405ms（vs `fish -lc env` 1113ms），且只在**首次**付一次，
+之后走磁盘缓存（毫秒级）。
+
+> **注意**：`envFrom: fish` 只继承**导出型环境变量**（`set -xg`）。fish 的语法、函数
+> （`~/.config/fish/functions/*.fish`）、`abbr`、别名**不会**继承——命令本体始终由
+> bash 执行，`for i in 1 2 3; do ... done` 这类 bash 语法正常可用。
+
+磁盘缓存位置 `%APPDATA%\rpi\msys2-bash-env.json`，带指纹
+`msys2Root|msystem|shell|envFrom`；任一字段变化即视为失效并重新捕获。
+读写失败一律降级为"无缓存"，绝不阻塞插件加载。删掉该文件即可强制下次重新捕获。
 
 ---
 
@@ -163,31 +202,43 @@ rpi --list-models       # opencode-go 的模型应仍然可见
 
 ## 使用 msys2-bash 功能
 
-### 启用：写配置文件
+### 启用：在 settings.json 里加一段
 
-任选一个路径（优先级从高到低）：
+编辑 rpi 全局配置文件（路径可用 `RPI_CODING_AGENT_DIR` 重定位）：
 
-1. 环境变量 `MSYS2_BASH_CONFIG` 指向的文件
-2. `$RPI_CODING_AGENT_DIR/msys2-bash.json`
-3. `~/.rpi/agent/msys2-bash.json` ← 通常用这个
+```
+~/.rpi/agent/settings.json
+```
 
-```bash
-cat > ~/.rpi/agent/msys2-bash.json <<'EOF'
+在顶层加一个 `msys2Bash` 对象，最小配置只需一个字段：
+
+```json
 {
-  "msys2Root": "C:\\msys64",
-  "msystem": "MINGW64",
-  "shell": "usr/bin/bash.exe",
-  "waitSeconds": 30,
-  "defaultTimeoutSeconds": 900,
-  "maxOutputBytes": 1048576,
-  "maxJobs": 20
+  "theme": "dark",
+  "defaultModel": "deepseek-v4.1-flash",
+  "msys2Bash": {
+    "msys2Root": "C:\\msys64"
+  }
 }
-EOF
+```
+
+想继承 fish 的环境变量（推荐，若你用 fish）：
+
+```json
+{
+  "msys2Bash": {
+    "msys2Root": "C:\\msys64",
+    "envFrom": "fish"
+  }
+}
 ```
 
 > **Windows 路径要写成 `"C:\\msys64"`**（JSON 里反斜杠必须转义）。直接写 `"C:\msys64"`
-> 会让配置解析失败，插件会报 `invalid escape at line N column M` 并拒绝启用。
+> 会让 `settings.json` 整体解析失败，rpi 会报 `invalid escape at line N column M`。
 > 也可以改用正斜杠：`"C:/msys64"`。
+>
+> 改完 `settings.json` 后请确认整份文件仍能解析。如果 rpi 启动时报
+> `Could not read config: invalid JSON`，说明整份配置坏了（不只是本插件失效）。
 
 **配置项说明**
 
@@ -196,12 +247,16 @@ EOF
 | `msys2Root` | **是** | — | MSYS2 安装根目录，必须存在且是目录。没有内置默认值 |
 | `shell` | 否 | `usr/bin/bash.exe` | 相对 `msys2Root`，也可写绝对路径；必须是文件 |
 | `msystem` | 否 | `MINGW64` | 设置 `MSYSTEM` 环境变量 |
+| `envFrom` | 否 | `bash` | 从哪个 shell 捕获环境变量：`bash` / `fish` / `none`。未知值回落 `bash` |
+| `loginShell` | 否 | `false` | `true` 则用 `-lc` 每次 source profile（回到旧行为，每条命令多 ~600ms） |
 | `waitSeconds` | 否 | `30` | `bash` 默认等待秒数，夹紧 1-120 |
 | `defaultTimeoutSeconds` | 否 | `900` | 命令总截止，夹紧 1-1800 |
 | `maxOutputBytes` | 否 | `1048576` | 单次输出上限（字节），必须 > 0 |
 | `maxJobs` | 否 | `20` | 保留的已完成命令条数，必须 >= 1 |
 | `security.blacklistEnabled` | 否 | `true` | 是否启用命令黑名单 |
 | `security.blacklistPatterns` | 否 | 内置列表 | 自定义正则列表 |
+
+实际生效的值以启动日志为准（日志里会打印 `loginShell=`、`envFrom=`、`envVars=`）。
 
 内置黑名单（与 `msys2-mcp` 一致）拦截：`rm -rf /`、`mkfs.*`、`dd ... of=/dev/`、
 `format X:`、`reg add|delete`、`shutdown`、`rd /s /q X:\`。命中直接拒绝，不创建进程。
@@ -213,7 +268,15 @@ RPI_STARTUP_DIAGNOSTICS=1 rpi --verbose -p "1" 2>&1 | grep 'extensions: loaded'
 # → loaded 11 plugin(s) (15 tool(s))     ← 工具数从 11 变成 15
 ```
 
-同时会打印一行诊断：`rpi-opencode: msys2-bash enabled (shell=C:\msys64\usr\bin\bash.exe, wait=30s, timeout=900s)`
+同时会打印一行诊断：
+
+```
+rpi-opencode: msys2-bash enabled (config=<settings.json 路径>, shell=C:\msys64\usr/bin/bash.exe,
+  wait=30s, timeout=900s, loginShell=false, envFrom=fish, envVars=97, captureTimeout=20s)
+```
+
+`envVars=0` 表示环境捕获失败（会另外打印 `env capture skipped: ...`）；
+此时命令仍能跑（非 login 模式），但会缺 fish/bash 自定义的变量。
 
 ### 日常使用
 
@@ -238,9 +301,12 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 ```json
 {
   "content": [{ "type": "text", "text": "<命令输出>" }],
-  "details": { "id": 1, "status": "completed", "exitCode": 0 }
+  "details": { "id": 1, "status": "completed", "exitCode": 0, "elapsedMs": 307 }
 }
 ```
+
+`elapsedMs` 是 job 从注册到结束的毫秒数（诊断用）。它包含插件自身固定开销，
+不等于 bash 启动耗时——排查"为什么慢"时参考启动日志里的 `loginShell` / `envFrom`。
 
 **仍在运行**（`waitSeconds` 内没跑完）
 
@@ -266,13 +332,14 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 #2 running npm run build
 ```
 
-### 关闭：删掉配置文件
+### 关闭：删掉 settings.json 里的那一段
 
 ```bash
-rm ~/.rpi/agent/msys2-bash.json
+# 编辑 ~/.rpi/agent/settings.json，删掉整个 "msys2Bash" 对象
 ```
 
-不需要卸载 DLL。删掉后内置 Git Bash 立即恢复（重启 rpi 生效）。
+不需要卸载 DLL。删掉后内置 Git Bash 恢复（重启 rpi 生效）。
+环境缓存文件（`%APPDATA%\rpi\msys2-bash-env.json`）可以留着，重新启用时直接命中。
 
 ---
 
@@ -283,10 +350,18 @@ rm ~/.rpi/agent/msys2-bash.json
 | 请求报 `400 MissingSessionID` | provider 未被包装 | 确认 `models.json` 里 baseUrl 就是 `opencode.ai` 或 `*.opencode.ai` |
 | `--list-models` 少了模型 | 插件 declare 了目录 | 本插件不 declare；检查是否有其他插件冲突 |
 | `cp` 报 `Device or resource busy` | rpi 正在运行并持有 DLL | 退出 rpi，或按上文改名法替换 |
-| 工具数仍是 11（期望 15） | 配置文件没找到或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
+| 工具数仍是 11（期望 15） | `settings.json` 里没有 `msys2Bash` 段，或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
+| `msys2Bash is required` / 未启用 | `settings.json` 缺 `msys2Bash` 段 | 在全局 `~/.rpi/agent/settings.json` 里加该段 |
+| `msys2Root is required` | 段里没写 `msys2Root` | 补上，它是唯一必填项 |
 | `msys2Root is not a directory` | 路径写错或不存在 | 确认 `C:\msys64` 存在；JSON 里反斜杠要写 `\\` |
 | `invalid escape at line N column M` | JSON 里的反斜杠没转义 | `"C:\msys64"` 改成 `"C:\\msys64"` 或 `"C:/msys64"` |
+| `Could not read config: invalid JSON` | 整份 `settings.json` 坏了 | 不只是插件失效，rpi 也启不来；修好 JSON |
+| `invalid \`msys2Bash\` section` | 段结构不对（如写成了字符串） | 段必须是 JSON 对象 |
 | `shell is not a file` | `shell` 相对路径拼错 | 默认应是 `usr/bin/bash.exe` |
+| `envVars=0` + `env capture skipped` | 捕获失败（shell 不存在 / 非零退出） | 命令仍可用；检查 `envFrom` 指定的 shell 是否存在 |
+| fish 变量没继承 | `envFrom` 不是 `fish`，或变量不是 `set -xg` 导出型 | 设 `"envFrom": "fish"`；非导出变量无法继承 |
+| fish 函数/别名不可用 | 这是设计边界 | 命令本体跑在 bash，不会加载 fish 函数 |
+| 改了 settings.json 不生效 | 配置只在插件注册时读一次 | 重启 rpi |
 | 命令里中文乱码 | 环境编码不对 | 插件已设 `LANG=C.UTF-8` 并做 UTF-8 lossy 解码；若仍乱码说明命令自身输出非 UTF-8 |
 | 长命令 30 秒就被杀 | 把 `waitSeconds` 当成了总超时 | 调大 `timeout`，不是 `waitSeconds` |
 | 取消后任务不见了 | cancel 杀了进程 | 本插件 cancel 只停等待；若观察到杀进程请报告 |
@@ -308,11 +383,16 @@ src/
   error.rs          共享核心：统一错误类型 GoError
   features/
     mod.rs          Feature 结构 + FEATURES 列表
-    provider.rs     provider feature：factory + HeaderInjectingProvider + ErrorProvider
-                    + ABI request/stream + pub fn register(api)
-    msys2_bash/
+    provider/
+      mod.rs         provider feature：注册入口 + ABI 请求/流式入口
+      factory.rs     按 model/options 构造 provider（含失败兜底）
+      header_provider.rs  每次请求注入 header 的包装层 + 单测
+      error_provider.rs   构造错误 → Error 终态的兜底 provider
+    msys2_shell/
       mod.rs        msys2-bash feature：注册 4 个工具 + bash 提示词 + 工具生命周期 ABI
-      config.rs     三路径定位、解析、校验、黑名单
+      config.rs     settings.json 定位、解析、校验、黑名单、环境捕获编排
+      settings.rs   读全局 settings.json 的 msys2Bash 段
+      env_cache.rs  环境变量捕获（bash/fish）+ 磁盘缓存（%）APPDATA%\rpi）
       job.rs        JobManager：线程、超时杀树、保留策略、cwd 解析
       output.rs     TailBuffer：保留最后 N 字节 + UTF-8 lossy
       tools/
@@ -329,8 +409,14 @@ src/
 
 ### msys2-bash 的执行细节
 
-- 可执行：`<msys2Root>/<shell>`，参数 `-lc "<command>"`
-- 环境：`MSYSTEM=<msystem>`、`CHERE_INVOKING=1`、`LANG=C.UTF-8`
+- 可执行：`<msys2Root>/<shell>`
+- 参数：`loginShell=false`（默认）→ `-c "<command>"`；`loginShell=true` → `-lc "<command>"`
+- 环境：`MSYSTEM=<msystem>`、`CHERE_INVOKING=1`、`LANG=C.UTF-8`，
+  非 login 模式下额外注入启动期捕获的环境变量（见上文"启动性能"）
+- 捕获：`<shell> -c env`（不是 `-lc`；fish 非 login 也会 source `config.fish`），
+  设置 `MSYSTEM` + `MSYS2_PATH_TYPE=inherit` + `MSYSTEM_NOSTART=yes`
+- 缓存：`%APPDATA%\rpi\msys2-bash-env.json`，指纹 `msys2Root|msystem|shell|envFrom`，
+  原子写（先写 `.tmp` 再 rename），空表不写入、读取时也拒绝空表
 - `cwd` 优先级：工具参数 `cwd` → 宿主 `__rpi.cwd` → 进程当前目录
   支持 MSYS2 路径：`/c/Users/x` → `C:\Users\x`；`/tmp` → `C:\msys64\tmp`
 - 输出：stdout+stderr 合并，**保留最后 `maxOutputBytes` 字节**（看错误尾巴），
@@ -383,8 +469,9 @@ pub mod example;
 
 ```bash
 cargo build --release      # 0 warning、0 error，只产出 rpi_opencode.dll
-cargo test                 # 73 个单测：URL 判定 / header 构造 / provider 筛选 /
-                           #            配置校验 / 输出截断 / job 保留 / 工具边界
+cargo test                 # 98 个单测：URL 判定 / header 构造 / provider 筛选 /
+                           #            配置校验 / 环境捕获与缓存 / 输出截断 /
+                           #            job 保留 / 工具边界
 ```
 
 运行时校验：
@@ -402,8 +489,11 @@ rpi --model deepseek/deepseek-flash -p "只回复 DS-OK"    # 不经过插件
 
 # 六、已知限制
 
-- **配置只在加载时读**：`models.json` 与 `msys2-bash.json` 都在插件注册阶段读取一次，
-  之后修改需要重启 rpi（或触发宿主重载）才会生效。
+- **配置只在加载时读**：`models.json` 与 `settings.json` 的 `msys2Bash` 段都在插件注册
+  阶段读取一次，之后修改需要重启 rpi（或触发宿主重载）才会生效。
+- **未知键保留未经上游保证**：本插件把自己的配置放在 `settings.json` 的 `msys2Bash` 键下，
+  依赖 rpi 在重写 `settings.json` 时保留它不认识的键。这一行为**未向上游确认过**；
+  若你发现该键被磨掉，重新加回即可，也可改用后续版本的独立配置项。
 - **不 declare 模型目录**：插件不向宿主声明任何模型，`--list-models` 的内容完全来自
   `models.json`；这也意味着插件无法自带默认模型。
 - **header 注入只看 baseUrl**：若同一 provider 在不同模型上使用不同端点，仍按每次请求的
@@ -411,8 +501,14 @@ rpi --model deepseek/deepseek-flash -p "只回复 DS-OK"    # 不经过插件
 - **job 状态是进程内状态**：`get_cmd_result` 只能取回**同一个 rpi 进程**内创建的 job。
   每次 `rpi -p` 都是新进程，所以跨命令行调用拿不到上一次的 id（返回 `no such job`）。
   同一会话内多轮调用正常。
+- **飞 Windows 平台不生效**：本 feature 依赖 MSYS2（`taskkill /F /T` 杀进程树、
+  `C:\msys64` 路径布局、`.exe` 后缀），因此在 `register()` 的第一行就做了
+  `cfg!(target_os = "windows")` 门禁：非 Windows 下不读配置、不捕获环境、不注册任何
+  工具、也不打印诊断（`provider` feature 不受影响）。
 - **`bash` 覆盖内置工具**：启用后宿主内置的 Git Bash 版本被插件的 MSYS2 版本替代。
-  想恢复内置 bash，删掉配置文件即可（无需卸载 DLL）。
+  想恢复内置 bash，删掉 `settings.json` 里的 `msys2Bash` 段即可（无需卸载 DLL）。
+- **不继承 fish 的语法与函数**：`envFrom: fish` 只继承 `set -xg` 导出的环境变量；
+  fish 的函数、`abbr`、别名、以及非导出变量都不会进入 bash 子进程。
 - **`poll` 是同步阻塞的**：宿主工具驱动没有 wake 回调，工具在 `poll` 内最多阻塞
   `waitSeconds`（≤120s）；因此不存在 Pending 分支，长命令会占住该次工具调用。
 

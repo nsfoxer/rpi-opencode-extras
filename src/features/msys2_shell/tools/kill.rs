@@ -3,8 +3,8 @@
 //! 幂等：job 已结束时返回 no-op（不报错）。被杀后 job 仍留在 manager 里，
 //! 因此被杀前的部分输出仍可用 `get_cmd_result` 取回。
 
-use crate::features::msys2_bash::job::{self, JobStatus};
-use crate::features::msys2_bash::tools::result::{
+use crate::features::msys2_shell::job::{self, JobStatus};
+use crate::features::msys2_shell::tools::result::{
     error_result, ok_result, parse_params, required_id,
 };
 use serde_json::json;

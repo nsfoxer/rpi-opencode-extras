@@ -3,8 +3,8 @@
 //! 返回每条记录的 id / status / command / startedAt / exitCode；命令文本会压平
 //! 换行并截断到合理长度，避免长命令把列表撑爆。
 
-use crate::features::msys2_bash::job;
-use crate::features::msys2_bash::tools::result::{error_result, ok_result, parse_params};
+use crate::features::msys2_shell::job;
+use crate::features::msys2_shell::tools::result::{error_result, ok_result, parse_params};
 use serde_json::json;
 
 /// 单条命令在列表里的最大展示字符数。

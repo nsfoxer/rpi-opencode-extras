@@ -3,12 +3,12 @@
 //! 与 `bash` 共用同一套等待语义：`waitSeconds` 只决定本次等多久（夹紧 1-120），
 //! 命令的总截止在创建时已固定，这里不会再延长。
 
-use crate::features::msys2_bash::config::BashConfig;
-use crate::features::msys2_bash::job::{self, JobStatus};
-use crate::features::msys2_bash::tools::result::{
+use crate::features::msys2_shell::config::BashConfig;
+use crate::features::msys2_shell::job::{self, JobStatus};
+use crate::features::msys2_shell::tools::result::{
     error_result, int_field, ok_result, parse_params, required_id,
 };
-use crate::features::msys2_bash::tools::{wait_for, WAIT_SECONDS_RANGE};
+use crate::features::msys2_shell::tools::{wait_for, WAIT_SECONDS_RANGE};
 use serde_json::json;
 use std::sync::atomic::AtomicBool;
 
@@ -102,9 +102,10 @@ fn details_for(view: &job::JobView) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::features::msys2_bash::config::{
+    use crate::features::msys2_shell::config::{
         BashConfig, DEFAULT_MAX_JOBS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECONDS,
     };
+    use crate::features::msys2_shell::env_cache::{EnvFrom, LoginEnv};
     use std::path::PathBuf;
 
     fn stub_config() -> BashConfig {
@@ -117,6 +118,9 @@ mod tests {
             max_output_bytes: DEFAULT_MAX_OUTPUT_BYTES,
             max_jobs: DEFAULT_MAX_JOBS,
             blacklist: Vec::new(),
+            login_shell: false,
+            env_from: EnvFrom::Bash,
+            login_env: LoginEnv::empty(),
             source: PathBuf::from("stub.json"),
         }
     }

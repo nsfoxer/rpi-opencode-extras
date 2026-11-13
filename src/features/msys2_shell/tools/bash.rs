@@ -6,12 +6,12 @@
 //! - 等不到就返回 `{status:'running', id}`，后续用 `get_cmd_result` 取结果；
 //! - `cancel` 只让本次调用提前返回，命令继续跑。
 
-use crate::features::msys2_bash::config::{check_blacklist, BashConfig};
-use crate::features::msys2_bash::job::{self, resolve_cwd, JobStatus};
-use crate::features::msys2_bash::tools::result::{
+use crate::features::msys2_shell::config::{check_blacklist, BashConfig};
+use crate::features::msys2_shell::job::{self, resolve_cwd, JobStatus};
+use crate::features::msys2_shell::tools::result::{
     error_result, host_cwd, int_field, ok_result, optional_str, parse_params, required_str,
 };
-use crate::features::msys2_bash::tools::{wait_for, TIMEOUT_SECONDS_RANGE, WAIT_SECONDS_RANGE};
+use crate::features::msys2_shell::tools::{wait_for, TIMEOUT_SECONDS_RANGE, WAIT_SECONDS_RANGE};
 use serde_json::json;
 use std::sync::atomic::AtomicBool;
 
@@ -108,6 +108,8 @@ pub fn render_wait(
                 if let Some(code) = view.exit_code {
                     object.insert("exitCode".to_string(), json!(code));
                 }
+                // 诊断用：插件看不到自身耗时，暴露出来方便定位“为什么这条命令慢”。
+                object.insert("elapsedMs".to_string(), json!(view.elapsed_millis));
                 if view.truncated {
                     object.insert("truncated".to_string(), json!(true));
                 }

@@ -9,15 +9,15 @@ pub mod kill;
 pub mod list;
 pub mod result;
 
-use crate::features::msys2_bash::config::BashConfig;
+use crate::features::msys2_shell::config::BashConfig;
 use std::sync::{Arc, Mutex};
 
 /// `waitSeconds` 允许范围（秒）。
-pub const WAIT_SECONDS_RANGE: (u64, u64) = crate::features::msys2_bash::config::WAIT_SECONDS_RANGE;
+pub const WAIT_SECONDS_RANGE: (u64, u64) = crate::features::msys2_shell::config::WAIT_SECONDS_RANGE;
 
 /// `timeout` 允许范围（秒）。
 pub const TIMEOUT_SECONDS_RANGE: (u64, u64) =
-    crate::features::msys2_bash::config::TIMEOUT_SECONDS_RANGE;
+    crate::features::msys2_shell::config::TIMEOUT_SECONDS_RANGE;
 
 /// 已安装的配置（注册期写入一次，之后只读）。
 static CONFIG: Mutex<Option<Arc<BashConfig>>> = Mutex::new(None);

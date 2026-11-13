@@ -4,8 +4,8 @@
 //! 完成后把终态写回共享状态。工具层的 `execute` 只创建 job 并起线程，然后最多等
 //! `waitSeconds` 秒；`cancel` 只置"停止等待"标志，**不杀进程**。
 
-use crate::features::msys2_bash::config::BashConfig;
-use crate::features::msys2_bash::output::TailBuffer;
+use crate::features::msys2_shell::config::BashConfig;
+use crate::features::msys2_shell::output::TailBuffer;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -60,7 +60,6 @@ pub struct JobView {
     /// 启动时间（Unix 毫秒）。
     pub started_at_millis: u64,
     /// 已运行毫秒数（运行中为实时值，已结束为总耗时）。
-    #[allow(dead_code)]
     pub elapsed_millis: u64,
     /// 输出正文（已按上限截断并解码）。
     pub output: String,
@@ -133,7 +132,7 @@ impl Job {
 
     /// 置“停止等待”标志。幂等，不杀进程。
     ///
-    /// 当前取消链路走 `ToolHandles` 的 `cancelled` 标志（见 [`crate::features::msys2_bash`]），
+    /// 当前取消链路走 `ToolHandles` 的 `cancelled` 标志（见 [`crate::features::msys2_shell`]），
     /// 这里保留该方法供非工具入口（例如未来的 CLI）使用。
     #[allow(dead_code)]
     pub fn stop_waiting(&self) {
@@ -301,13 +300,20 @@ impl JobManager {
         let state = Arc::clone(&job.state);
         let shell = config.shell.clone();
         let msystem = config.msystem.clone();
+        // 命令行与注入环境在启动期已定，这里只搬走需要的东西。
+        let login_shell = config.login_shell;
+        let login_env = config.login_env.vars().clone();
         let command = command.to_string();
         let cwd = cwd.to_path_buf();
         let timeout = Duration::from_secs(timeout_seconds);
 
         let spawned = std::thread::Builder::new()
             .name(format!("msys2-bash-{id}"))
-            .spawn(move || run_job(state, shell, msystem, command, cwd, timeout));
+            .spawn(move || {
+                run_job(
+                    state, shell, msystem, login_shell, login_env, command, cwd, timeout,
+                )
+            });
 
         if let Err(error) = spawned {
             // 线程起不来属于硬失败：直接落终态，不让 job 永远停在 running。
@@ -363,7 +369,10 @@ fn kill_process_tree(pid: u32) {
 ///
 /// 参数：
 /// - `state`：共享状态（本线程是唯一写入者）。
-/// - `shell`/`msystem`/`command`/`cwd`/`timeout`：执行参数。
+/// - `shell`/`msystem`：shell 路径与 MSYSTEM 值。
+/// - `login_shell`：`true` 用 `-lc`（source /etc/profile）；`false` 用 `-c` + 注入环境。
+/// - `login_env`：启动期捕获的环境变量（`login_shell=true` 时为空）。
+/// - `command`/`cwd`/`timeout`：执行参数。
 ///
 /// 注意：本线程**不**看“停止等待”标志——那个标志只影响工具层还要不要继续等，
 /// 进程必须一直跑到自然结束或被 `kill_cmd`/超时杀掉。
@@ -371,19 +380,30 @@ fn run_job(
     state: Arc<Mutex<JobState>>,
     shell: PathBuf,
     msystem: String,
+    login_shell: bool,
+    login_env: std::collections::HashMap<String, String>,
     command: String,
     cwd: PathBuf,
     timeout: Duration,
 ) {
     // 第一步：构造子进程。stdout/stderr 都走 piped，稍后由两个线程分别读取。
+    //
+    // 关键性能选择：默认用 `-c`（非 login）而不是 `-lc`。MSYS2 的 login shell
+    // 每次都要 source /etc/profile，实测单次命令多花约 540~640ms；而 `-c` 配合
+    // 启动期注入的环境变量能得到同样的 PATH / 自定义变量（见 env_cache 注释）。
     let mut builder = Command::new(&shell);
     builder
-        .arg("-lc")
+        .arg(if login_shell { "-lc" } else { "-c" })
         .arg(&command)
         .current_dir(&cwd)
         .env("MSYSTEM", &msystem)
         .env("CHERE_INVOKING", "1")
-        .env("LANG", "C.UTF-8")
+        .env("LANG", "C.UTF-8");
+    // 注入启动期捕获的环境变量（登录模式不需要，profile 会自己建好）。
+    if !login_shell && !login_env.is_empty() {
+        builder.envs(&login_env);
+    }
+    builder
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
