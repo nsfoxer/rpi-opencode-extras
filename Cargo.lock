@@ -1234,8 +1234,10 @@ name = "rpi-opencode"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "regex",
  "rpi-ai",
  "rpi-plugin-sdk",
+ "serde",
  "serde_json",
  "url",
 ]

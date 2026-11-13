@@ -3,6 +3,7 @@
 //! 加新功能只需两步：新建 `features/<name>.rs` 并在这里的 [`FEATURES`] 追加一行。
 //! `lib.rs` 与 [`crate::registry`] 都不需要改动。
 
+pub mod msys2_bash;
 pub mod provider;
 
 /// 一个可注册的插件能力。
@@ -16,10 +17,16 @@ pub struct Feature {
 /// 本插件启用的全部能力，按注册顺序执行。
 ///
 /// 顺序有意义：同名 provider 由宿主按"先注册者胜"处理，因此顺序要与历史行为保持一致。
-pub static FEATURES: &[Feature] = &[Feature {
-    name: "provider",
-    register: provider::register,
-}];
+pub static FEATURES: &[Feature] = &[
+    Feature {
+        name: "provider",
+        register: provider::register,
+    },
+    Feature {
+        name: "msys2-bash",
+        register: msys2_bash::register,
+    },
+];
 
 #[cfg(test)]
 mod tests {
