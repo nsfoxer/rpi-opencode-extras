@@ -1,0 +1,15 @@
+[package]
+name = "rpi-opencode"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# 必须与宿主 rpi 0.22.1 同版本（插件 ABI 4）；provider feature 才带 provider 桥接
+rpi-plugin-sdk = { version = "=0.22.1", features = ["provider"] }
+rpi-ai = "=0.22.1"
+serde_json = "1"
+async-trait = "0.1"
+url = "2"
