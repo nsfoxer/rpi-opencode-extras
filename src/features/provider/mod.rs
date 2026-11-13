@@ -41,7 +41,7 @@ pub fn register(api: &PluginApi) -> i32 {
     let specs = match crate::config::discover_opencode_providers() {
         Ok(specs) => specs,
         Err(error) => {
-            eprintln!("rpi-opencode: {}, no provider wrapped", error.describe());
+            eprintln!("rpi-opencode-extras: {}, no provider wrapped", error.describe());
             return 0;
         }
     };
@@ -54,7 +54,7 @@ pub fn register(api: &PluginApi) -> i32 {
     // 第三步：确认宿主至少有一个可用的注册槽位。
     if api.register_streaming_provider.is_none() && api.register_provider.is_none() {
         eprintln!(
-            "rpi-opencode: {}",
+            "rpi-opencode-extras: {}",
             GoError::Unsupported("host exposes no provider registration slot".into()).describe()
         );
         return 0;
@@ -79,7 +79,7 @@ pub fn register(api: &PluginApi) -> i32 {
 
         if rc != 0 {
             eprintln!(
-                "rpi-opencode: {}",
+                "rpi-opencode-extras: {}",
                 GoError::Unsupported(format!(
                     "host rejected provider registration for {} (rc={rc})",
                     spec.id

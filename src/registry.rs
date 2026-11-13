@@ -14,7 +14,7 @@ pub fn register_all(api: &rpi_plugin_sdk::PluginApi) -> i32 {
         let rc = (feature.register)(api);
         if rc != 0 {
             eprintln!(
-                "rpi-opencode: feature `{}` failed with rc={rc}",
+                "rpi-opencode-extras: feature `{}` failed with rc={rc}",
                 feature.name
             );
             return rc;

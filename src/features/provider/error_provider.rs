@@ -34,7 +34,7 @@ impl ErrorProvider {
 impl Provider for ErrorProvider {
     /// 固定 id：该 provider 不与任何真实 provider 竞争模型目录。
     fn id(&self) -> &str {
-        "rpi-opencode-error"
+        "rpi-opencode-extras-error"
     }
 
     /// 错误 provider 不声明任何模型。

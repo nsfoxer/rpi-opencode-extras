@@ -1,15 +1,16 @@
-# rpi-opencode
+# rpi-opencode-extras
 
-rpi 原生 Rust `cdylib` 插件，包含三个互相独立的能力：
+rpi 原生 Rust `cdylib` 插件，包含四个互相独立的能力：
 
 | 能力 | 作用 | 是否默认启用 |
 | --- | --- | --- |
 | **`provider`** | 给所有 baseUrl 指向 `opencode.ai` 的 provider 自动注入请求头 | **是**（自动生效，无需配置） |
 | **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | **否**（`settings.json` 写配置段才启用；仅 Windows） |
 | **`deepseek-search`** | 提供 `deepseek_search` 工具：调 DeepSeek Search API 检索网页 | **是**（无需配置，首次调用时才读凭据） |
+| **`go-usage`** | 在 TUI 页脚显示 opencode.ai Go 套餐用量（含月度到期倒计时） | **是**（仅交互式 TUI + `opencode.ai` provider 时显示） |
 
 - 宿主：rpi `0.22.1`，插件 ABI `4`，Windows x64
-- 产物：**单个** `rpi_opencode.dll`，单个 `export_plugin!` 入口
+- 产物：**单个** `rpi_opencode_extras.dll`，单个 `export_plugin!` 入口
 - 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）
 - 不引入 `tokio` / `reqwest`（异步运行时与 provider HTTP 客户端都由宿主提供；
   `ureq` 仅供 `deepseek-search` 的同步网络调用，跑在它自己的工作线程上）
@@ -30,7 +31,7 @@ rpi 原生 Rust `cdylib` 插件，包含三个互相独立的能力：
 | header | 值 |
 | --- | --- |
 | `x-opencode-session` | `ses_<宿主真实 session id>`；无 session 时 `rpi-<pid>`；已带 `ses_` 前缀则不重复 |
-| `user-agent` | `rpi-opencode/0.1` |
+| `user-agent` | `rpi-opencode-extras/0.1` |
 
 已有 header 全部保留，header 名统一小写，同名（大小写不同）只留一份，插件值优先。
 
@@ -193,6 +194,68 @@ MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、
   summary 超过 400 字符截断（按字符边界，不会切坏 UTF-8）
 - `cancel` 优先于迟到结果：取消后即使请求成功也不回传成功
 
+## 4. go-usage：opencode-go 套餐用量（TUI 页脚）
+
+**解决的问题**：opencode.ai 的 Go 套餐有 5 小时 / 周 / 月三档限额，用完会直接报错中断。
+这个能力把当前用量常驻在 TUI 页脚，跑一轮就能看到消耗，不用再去网页控制台查。
+
+### 展示位置与形态
+
+`footer.after` 槽位单行，形如：
+
+```
+Go 5h 1% · 周 23% · 月 65% ⟳ 2d17h
+```
+
+- 三个数字分别是 5 小时滚动 / 周 / 月窗口的**已用**百分比。
+- `⟳ 2d17h` 是月度窗口的**到期倒计时**；按量级自动切换精度
+  （`⟳ 2d17h` / `⟳ 5h13m` / `⟳ 47m` / 已到期 `⟳ now`）。
+- 缺失的窗口直接跳过，不显示 `0%`（`0%` 是真实值，与“未上报”不是一回事）。
+
+### 什么情况下才显示
+
+**两个条件同时满足**才出现：
+
+1. 跑在**交互式 TUI** 里（`rpi -p` 等 headless 模式不显示）。
+2. 当前 provider 指向 `opencode.ai`（判定优先用 `GetExecutionContext` 的
+   `model.provider`，兜底查 `models.json` 里该 provider 的 `baseUrl`）。
+
+切到别的 provider（如 `deepseek` 直连）时组件被 `hide`（不是 `remove`），
+切回来能立即恢复。
+
+### 何时刷新
+
+**事件驱动，不轮询**：
+
+| 事件 | 行为 |
+| --- | --- |
+| `BeforeTuiStart` | 打开门控（唯一启用入口）+ 首次刷新 |
+| `AgentStart` | 重判 provider，按需刷新 |
+| `AgentSettled` | 一轮结束，主力刷新点 |
+| `ModelSelect` | 切模型，忽略节流立即重判 |
+
+两次成功拉取之间至少隔 **60 秒**（`percent` 是整数粒度，分钟级轮询无意义）。
+节流窗口内用上次快照重放，不会发请求，也不会闪烁。
+请求失败时保留上一次内容，不清空。
+
+### 凭据
+
+只读 `~/.rpi/agent/models.json` 里 `baseUrl` 指向 `opencode.ai` 的 provider 的 `apiKey`
+（**不读环境变量**：套餐用量必须和实际发请求用的 key 一致）。
+**错误文本与日志里不会出现任何 key 内容**。
+
+### 端点
+
+```
+GET https://opencode.ai/inference/go/v1/usage    Authorization: Bearer <key>
+→ {"usage":{"rolling":{"percent":0,"resetsAt":"..."},
+            "weekly":{"percent":22,"resetsAt":"..."},
+            "monthly":{"percent":65,"resetsAt":"..."}}}
+```
+
+`zen/go/v1/usage` 是旧别名（返回同一份数据），作为兜底自动尝试。
+`401` 是凭据问题，换端点也不会好，直接放弃不再重试。
+
 ---
 
 # 二、如何使用
@@ -204,13 +267,13 @@ cd /c/Users/nsfoxer/Desktop/src/foxer/rpi-plugins/opencode
 cargo build --release
 ```
 
-产物：`target/release/rpi_opencode.dll`。
+产物：`target/release/rpi_opencode_extras.dll`。
 
 ## 步骤 2：安装
 
 ```bash
 # 先退出正在运行的 rpi，否则 DLL 被占用会复制失败（Device or resource busy）
-cp target/release/rpi_opencode.dll ~/.rpi/agent/extensions/
+cp target/release/rpi_opencode_extras.dll ~/.rpi/agent/extensions/
 ```
 
 如果 rpi 正在运行且无法退出，可以先把旧文件改名（Windows 允许对已映射的 DLL 重命名），
@@ -218,9 +281,9 @@ cp target/release/rpi_opencode.dll ~/.rpi/agent/extensions/
 
 ```bash
 cd ~/.rpi/agent/extensions
-mv rpi_opencode.dll rpi_opencode.dll.old
-cp <项目>/target/release/rpi_opencode.dll .
-rm rpi_opencode.dll.old     # 下次重启后删也可以
+mv rpi_opencode_extras.dll rpi_opencode_extras.dll.old
+cp <项目>/target/release/rpi_opencode_extras.dll .
+rm rpi_opencode_extras.dll.old     # 下次重启后删也可以
 ```
 
 ## 步骤 3：确认加载
@@ -331,7 +394,7 @@ RPI_STARTUP_DIAGNOSTICS=1 rpi --verbose -p "1" 2>&1 | grep 'extensions: loaded'
 同时会打印一行诊断：
 
 ```
-rpi-opencode: msys2-bash enabled (config=<settings.json 路径>, shell=C:\msys64\usr/bin/bash.exe,
+rpi-opencode-extras: msys2-bash enabled (config=<settings.json 路径>, shell=C:\msys64\usr/bin/bash.exe,
   wait=30s, timeout=900s, loginShell=false, envFrom=fish, envVars=97, captureTimeout=20s)
 ```
 
@@ -458,6 +521,14 @@ src/
       api_key.rs     凭据解析（DEEPSEEK_API_KEY → models.json）
       search.rs      HTTP 调用、重试策略、结果解析与格式化
       worker.rs      工作线程、句柄表、四个生命周期函数
+    go_usage/
+      mod.rs         go-usage feature：订阅事件 + 注册关闭钩子 + TUI 门控
+      api_key.rs     从 models.json 取 opencode.ai provider 的 apiKey（不落日志）
+      fetch.rs       /usage 端点 HTTP 拉取（错误文本不含 key）
+      usage.rs       响应解析的纯函数与单测
+      format.rs      页脚文本与倒计时纯函数与单测（自实现 RFC 3339 解析）
+      worker.rs      工作线程、60s 节流、UiComponent 调用封装
+      live_check.rs  联网集成检查（#[ignore]，需显式跑）
     msys2_shell/
       mod.rs        msys2-bash feature：注册 4 个工具 + bash 提示词 + 工具生命周期 ABI
       config.rs     settings.json 定位、解析、校验、黑名单、环境捕获编排
@@ -507,6 +578,25 @@ src/
 msys2-bash 启用时是 **16** 而不是 12+3=15：注册了 4 个工具，其中 `bash` 覆盖同名内置工具，
 但宿主计数时**内置与插件各算一次**（实测），因此从 12 再净增 4。
 
+`go-usage` **不注册任何工具**（只画 UI 组件），因此不影响工具数——
+本机实测（已启用 msys2-bash）仍为 `loaded 10 plugin(s) (15 tool(s))`。
+
+### go-usage 的关键实测结论（写代码前必须知道）
+
+| 行为 | 结果 |
+| --- | --- |
+| `EventHandlerFn` 内**同步**调 `runtime_action` | **进程 Segmentation fault**（exit 139） |
+| `GetExecutionContext` 在**注册期**调 | `rc=1 {"error":"runtime action invoked before harness was built"}` |
+| `GetExecutionContext` 在**事件派生线程**调 | `rc=0`，返回 `model.provider` |
+| `UiComponent` `register` 带 `title` | `rc=1 {"error":"unexpected component field"}` |
+| `UiComponent` `update` 带 `title` | `rc=0` |
+| `BeforeTuiStart` 事件 | **仅交互式 TUI** 触发，`-p` 模式从不触发 |
+| `register_plugin_lifecycle` 的 begin 钩子 | `-p` 模式下**未被调用**（不能依赖它做退出保护） |
+
+因此架构上：**事件回调只起线程，所有宿主调用都在工作线程里**；
+并用 `BeforeTuiStart` 当唯一启用门控，从根上避免 `-p` 模式下的退出期噪声
+（`runtime action invoked after harness was dropped`）。
+
 ### 如何新增一个 feature
 
 1. 新建 `src/features/<name>.rs`（或目录），实现
@@ -539,7 +629,7 @@ pub mod example;
 # 五、构建与校验
 
 ```bash
-cargo build --release      # 0 warning、0 error，只产出 rpi_opencode.dll
+cargo build --release      # 0 warning、0 error，只产出 rpi_opencode_extras.dll
 cargo test                 # 117 个单测：URL 判定 / header 构造 / provider 筛选 /
                            #            配置校验 / 环境捕获与缓存 / 输出截断 /
                            #            job 保留 / 工具边界 /

@@ -44,24 +44,24 @@ pub fn register(api: &PluginApi) -> i32 {
         Ok(None) => return 0,
         // 配置存在但无效：一行 warning，然后不注册任何工具。
         Err(reason) => {
-            eprintln!("rpi-opencode: msys2-bash disabled: {reason}");
+            eprintln!("rpi-opencode-extras: msys2-bash disabled: {reason}");
             return 0;
         }
     };
 
     // 第三步：宿主是否提供工具注册槽位。缺失时同样只是"不启用"。
     let Some(register_tool) = api.register_tool else {
-        eprintln!("rpi-opencode: msys2-bash disabled: host has no tool registration slot");
+        eprintln!("rpi-opencode-extras: msys2-bash disabled: host has no tool registration slot");
         return 0;
     };
 
     // 第四步：初始化全局 job manager（配置有效期 = 进程生命周期）。
     if !job::init_manager(config.max_jobs) {
-        eprintln!("rpi-opencode: msys2-bash disabled: job manager already initialized");
+        eprintln!("rpi-opencode-extras: msys2-bash disabled: job manager already initialized");
         return 0;
     }
     if tools::install_config(Arc::new(config.clone())).is_err() {
-        eprintln!("rpi-opencode: msys2-bash disabled: config already installed");
+        eprintln!("rpi-opencode-extras: msys2-bash disabled: config already installed");
         return 0;
     }
 
@@ -70,7 +70,7 @@ pub fn register(api: &PluginApi) -> i32 {
         let rc = register_one(register_tool, spec);
         if rc != 0 {
             eprintln!(
-                "rpi-opencode: msys2-bash failed to register `{}` (rc={rc})",
+                "rpi-opencode-extras: msys2-bash failed to register `{}` (rc={rc})",
                 spec.name
             );
             return rc;
@@ -85,12 +85,12 @@ pub fn register(api: &PluginApi) -> i32 {
         );
         // 1 = 未知工具，2 = 元数据格式错误；都不影响工具可用性，仅丢失提示词。
         if rc != 0 {
-            eprintln!("rpi-opencode: msys2-bash bash prompt metadata rejected (rc={rc})");
+            eprintln!("rpi-opencode-extras: msys2-bash bash prompt metadata rejected (rc={rc})");
         }
     }
 
     eprintln!(
-        "rpi-opencode: msys2-bash enabled (config={}, shell={}, wait={}s, timeout={}s, loginShell={}, envFrom={}, envVars={}, captureTimeout={}s)",
+        "rpi-opencode-extras: msys2-bash enabled (config={}, shell={}, wait={}s, timeout={}s, loginShell={}, envFrom={}, envVars={}, captureTimeout={}s)",
         config.source.display(),
         config.shell.display(),
         config.wait_seconds,

@@ -1,4 +1,4 @@
-//! rpi-opencode：给所有 baseUrl 指向 opencode.ai 的 provider 注入
+//! rpi-opencode-extras：给所有 baseUrl 指向 opencode.ai 的 provider 注入
 //! `x-opencode-session` 与 `user-agent` 请求头。
 //!
 //! 只产出一个 cdylib、只调用一次 [`rpi_plugin_sdk::export_plugin!`]。本文件只做入口

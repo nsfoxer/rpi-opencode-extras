@@ -4,6 +4,7 @@
 //! `lib.rs` 与 [`crate::registry`] 都不需要改动。
 
 pub mod deepseek_search;
+pub mod go_usage;
 pub mod msys2_shell;
 pub mod provider;
 
@@ -30,6 +31,10 @@ pub static FEATURES: &[Feature] = &[
     Feature {
         name: "deepseek-search",
         register: deepseek_search::register,
+    },
+    Feature {
+        name: "go-usage",
+        register: go_usage::register,
     },
 ];
 

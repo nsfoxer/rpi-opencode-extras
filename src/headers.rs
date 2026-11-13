@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 /// 注入的 User-Agent，标识请求来自本插件而非裸 rpi。
-pub const USER_AGENT: &str = "rpi-opencode/0.1";
+pub const USER_AGENT: &str = "rpi-opencode-extras/0.1";
 
 /// opencode.ai 会话头的 header 名（小写）。
 pub const SESSION_HEADER: &str = "x-opencode-session";

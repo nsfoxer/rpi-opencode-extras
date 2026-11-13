@@ -357,7 +357,7 @@ pub fn load_or_capture(
             env
         }
         Err(reason) => {
-            eprintln!("rpi-opencode: msys2-bash env capture skipped: {reason}");
+            eprintln!("rpi-opencode-extras: msys2-bash env capture skipped: {reason}");
             LoginEnv::empty()
         }
     }
