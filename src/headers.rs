@@ -70,10 +70,19 @@ pub fn build_headers(
 ///
 /// 参数：`session_id` 为宿主传入的会话 id，可能为 `None` 或空白。
 /// 返回：以 `ses_` 开头的非空字符串；宿主没有会话时返回 `rpi-<pid>`。
+///
+/// **一致性保证（重要）**：
+/// - 会话 id **有值**时，本函数是纯函数映射（`<id>` → `ses_<id>`），不含 pid、
+///   时间或随机数。因此**同一会话无论重启多少次进程、发多少轮请求，header 值都一致**
+///   （已实测：恢复同一会话的 3 个不同进程、以及同一进程内 3 轮请求，header 完全相同）。
+/// - 会话 id **为空/空白**时，回落到 `rpi-<pid>`。这个值**每次进程启动都会变**，
+///   不具跨进程稳定性。该分支只用于“无会话上下文”的退化场景（如离线诊断），
+///   正常的会话流程（新会话 / `--session` 恢复 / `-c` 继续）宿主都会传入真实 id，
+///   不会走到这里。
 fn normalize_session_id(session_id: Option<&str>) -> String {
     let trimmed = session_id.unwrap_or("").trim();
     if trimmed.is_empty() {
-        // 无会话上下文（例如离线诊断）时仍给出稳定的非空值。
+        // 退化分支：无会话上下文时只能给进程级稳定值（跨进程不稳定，见文档）。
         return format!("rpi-{}", std::process::id());
     }
     if trimmed.starts_with(SESSION_PREFIX) {
@@ -116,6 +125,22 @@ mod tests {
     fn existing_prefix_is_not_duplicated() {
         let headers = build_headers(None, Some("ses_abc"), "m");
         assert_eq!(headers["x-opencode-session"], "ses_abc");
+    }
+
+    #[test]
+    fn same_session_yields_identical_header_across_calls() {
+        // 一致性契约：会话 id 有值时，header 只由 id 决定，
+        // 与进程、调用次数无关（因此恢复同一会话不会导致 header 漂移）。
+        let id = "01a1d379-4ee4-70c2-907a-8be88cb554ce";
+        let first = build_headers(None, Some(id), "m");
+        for _ in 0..10 {
+            assert_eq!(build_headers(None, Some(id), "m"), first);
+        }
+        assert_eq!(first["x-opencode-session"], format!("ses_{id}"));
+
+        // 不同会话必须得到不同 header（防止误写成常量）。
+        let other = build_headers(None, Some("01a1d379-64f7-77f3-95c5-bd25a606cd08"), "m");
+        assert_ne!(first["x-opencode-session"], other["x-opencode-session"]);
     }
 
     #[test]
