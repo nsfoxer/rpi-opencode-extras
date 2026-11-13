@@ -3,6 +3,7 @@
 //! 加新功能只需两步：新建 `features/<name>.rs` 并在这里的 [`FEATURES`] 追加一行。
 //! `lib.rs` 与 [`crate::registry`] 都不需要改动。
 
+pub mod deepseek_search;
 pub mod msys2_shell;
 pub mod provider;
 
@@ -25,6 +26,10 @@ pub static FEATURES: &[Feature] = &[
     Feature {
         name: "msys2-bash",
         register: msys2_shell::register,
+    },
+    Feature {
+        name: "deepseek-search",
+        register: deepseek_search::register,
     },
 ];
 

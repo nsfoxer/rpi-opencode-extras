@@ -1,16 +1,18 @@
 # rpi-opencode
 
-rpi 原生 Rust `cdylib` 插件，包含两个互相独立的能力：
+rpi 原生 Rust `cdylib` 插件，包含三个互相独立的能力：
 
 | 能力 | 作用 | 是否默认启用 |
 | --- | --- | --- |
 | **`provider`** | 给所有 baseUrl 指向 `opencode.ai` 的 provider 自动注入请求头 | **是**（自动生效，无需配置） |
-| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | **否**（写配置文件才启用） |
+| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | **否**（`settings.json` 写配置段才启用；仅 Windows） |
+| **`deepseek-search`** | 提供 `deepseek_search` 工具：调 DeepSeek Search API 检索网页 | **是**（无需配置，首次调用时才读凭据） |
 
 - 宿主：rpi `0.22.1`，插件 ABI `4`，Windows x64
 - 产物：**单个** `rpi_opencode.dll`，单个 `export_plugin!` 入口
-- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`
-- 不引入 `tokio` / `reqwest` / `ureq`（HTTP 客户端与异步运行时都由宿主提供）
+- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）
+- 不引入 `tokio` / `reqwest`（异步运行时与 provider HTTP 客户端都由宿主提供；
+  `ureq` 仅供 `deepseek-search` 的同步网络调用，跑在它自己的工作线程上）
 
 ---
 
@@ -132,6 +134,46 @@ MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、
 磁盘缓存位置 `%APPDATA%\rpi\msys2-bash-env.json`，带指纹
 `msys2Root|msystem|shell|envFrom`；任一字段变化即视为失效并重新捕获。
 读写失败一律降级为"无缓存"，绝不阻塞插件加载。删掉该文件即可强制下次重新捕获。
+
+## 3. deepseek-search：网页检索工具
+
+**解决的问题**：模型需要即时网页信息（最新版本号、文档链接、新闻）时，从训练数据里
+回答容易过时或编造 URL。本能力提供一个真实联网的检索工具。
+
+合并自独立的 `rpi-deepseek-search` 项目，改为本插件的 feature 模块。
+
+### 工具
+
+| 工具 | 用途 | 参数 |
+| --- | --- | --- |
+| `deepseek_search` | 调 DeepSeek Search API 返回排序后的网页结果 | `query`（必填）、`count`、`need_content` |
+
+参数说明：
+
+| 参数 | 类型 | 默认 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | — | 搜索词，trim 后 1-128 字符（按字符计，不按字节） |
+| `count` | integer | `5` | 返回条数，夹紧 1-50；非整数回落默认值 |
+| `need_content` | boolean | `false` | 是否请求页面正文；非布尔当 false |
+
+### 凭据
+
+按顺序查找，找到即用：
+
+1. 环境变量 `DEEPSEEK_API_KEY`（空白值视为未设置）
+2. `~/.rpi/agent/models.json` 里 `baseUrl` 含 `api.deepseek.com` 的 provider 的 `apiKey`
+
+两者都没有时工具返回 `{"error":"missing DeepSeek API key"}`。
+**错误文本与日志里不会出现任何 key 内容**。
+
+### 行为
+
+- 网络调用在**独立工作线程**内：`execute` / `poll` / `cancel` / `destroy` 都不阻塞宿主
+- 单次请求超时 20s；`429` 与 `5xx` 最多重试 1 次；`cancel` 后不再发起新请求
+- 响应体读取上限 4 MiB，防止异常响应打爆插件内存
+- 结果每行一条：`标题 / URL / 日期 / authority / summary`，缺失字段用 `-` 占位，
+  summary 超过 400 字符截断（按字符边界，不会切坏 UTF-8）
+- `cancel` 优先于迟到结果：取消后即使请求成功也不回传成功
 
 ---
 
@@ -362,6 +404,10 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 | fish 变量没继承 | `envFrom` 不是 `fish`，或变量不是 `set -xg` 导出型 | 设 `"envFrom": "fish"`；非导出变量无法继承 |
 | fish 函数/别名不可用 | 这是设计边界 | 命令本体跑在 bash，不会加载 fish 函数 |
 | 改了 settings.json 不生效 | 配置只在插件注册时读一次 | 重启 rpi |
+| `deepseek_search` 报 `missing DeepSeek API key` | 环境变量与 `models.json` 都没有 DeepSeek 凭据 | 设 `DEEPSEEK_API_KEY`，或在 `models.json` 里配一个 `baseUrl` 含 `api.deepseek.com` 的 provider |
+| `deepseek_search` 报 `HTTP 401` | key 无效 | 核对 `DEEPSEEK_API_KEY` / `models.json` 里的 `apiKey` |
+| `deepseek_search` 报 `invalid params:` | 参数不符合契约 | `query` 必填且 1-128 字符；`count` 夹紧 1-50 |
+| 工具数比预期少 1 | `deepseek-search` 未注册（宿主无工具槽位） | 检查启动输出的 `feature \`deepseek-search\` failed` |
 | 命令里中文乱码 | 环境编码不对 | 插件已设 `LANG=C.UTF-8` 并做 UTF-8 lossy 解码；若仍乱码说明命令自身输出非 UTF-8 |
 | 长命令 30 秒就被杀 | 把 `waitSeconds` 当成了总超时 | 调大 `timeout`，不是 `waitSeconds` |
 | 取消后任务不见了 | cancel 杀了进程 | 本插件 cancel 只停等待；若观察到杀进程请报告 |
@@ -388,6 +434,12 @@ src/
       factory.rs     按 model/options 构造 provider（含失败兜底）
       header_provider.rs  每次请求注入 header 的包装层 + 单测
       error_provider.rs   构造错误 → Error 终态的兜底 provider
+    deepseek_search/
+      mod.rs         deepseek-search feature：工具 schema + 提示词 + register(api)
+      params.rs      入参解析与契约校验
+      api_key.rs     凭据解析（DEEPSEEK_API_KEY → models.json）
+      search.rs      HTTP 调用、重试策略、结果解析与格式化
+      worker.rs      工作线程、句柄表、四个生命周期函数
     msys2_shell/
       mod.rs        msys2-bash feature：注册 4 个工具 + bash 提示词 + 工具生命周期 ABI
       config.rs     settings.json 定位、解析、校验、黑名单、环境捕获编排
@@ -430,11 +482,12 @@ src/
 | 情形 | 输出 |
 | --- | --- |
 | 无插件 | `10 plugin(s) (11 tool(s))` |
-| 插件加载、msys2-bash 未配置/无效 | `11 plugin(s) (11 tool(s))` |
-| 插件加载、msys2-bash 启用 | `11 plugin(s) (15 tool(s))` |
+| 插件加载、msys2-bash 未配置/无效 | `11 plugin(s) (12 tool(s))` ← 基线 + `deepseek_search` |
+| 插件加载、msys2-bash 启用 | `11 plugin(s) (16 tool(s))` |
 
-启用时是 **15** 而不是 11+3=14：注册了 4 个工具，其中 `bash` 覆盖同名内置工具，但宿主
-计数时**内置与插件各算一次**（实测），因此净增 4。
+`deepseek-search` 默认启用，所以基线比只有 provider 时多 1 个工具。
+msys2-bash 启用时是 **16** 而不是 12+3=15：注册了 4 个工具，其中 `bash` 覆盖同名内置工具，
+但宿主计数时**内置与插件各算一次**（实测），因此从 12 再净增 4。
 
 ### 如何新增一个 feature
 
@@ -469,9 +522,11 @@ pub mod example;
 
 ```bash
 cargo build --release      # 0 warning、0 error，只产出 rpi_opencode.dll
-cargo test                 # 98 个单测：URL 判定 / header 构造 / provider 筛选 /
+cargo test                 # 117 个单测：URL 判定 / header 构造 / provider 筛选 /
                            #            配置校验 / 环境捕获与缓存 / 输出截断 /
-                           #            job 保留 / 工具边界
+                           #            job 保留 / 工具边界 /
+                           #            deepseek 参数校验 / 凭据解析 / 结果格式化 /
+                           #            句柄生命周期与并发
 ```
 
 运行时校验：

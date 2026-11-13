@@ -16,3 +16,5 @@ url = "2"
 # msys2-bash feature 用：配置反序列化（serde derive）+ 命令黑名单匹配
 serde = { version = "1", features = ["derive"] }
 regex = "1"
+# deepseek-search feature 用：HTTP 请求（rustls，不引入 OpenSSL）
+ureq = { version = "2", features = ["json", "tls"] }
