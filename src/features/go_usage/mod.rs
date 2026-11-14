@@ -58,7 +58,12 @@ const SHUTDOWN_WAIT_STEPS: usize = 60;
 /// 设计取向：**这个 feature 是"锦上添花"**，缺任何宿主能力都只是不显示，
 /// 绝不让整个插件加载失败。
 pub fn register(api: &PluginApi) -> i32 {
-    // 第一步：保存 API 表。工作线程需要它来调 runtime_action；
+    // 第一步：`opencodeExtras.goUsage=false` 时完全不注册页脚与轮询线程。
+    if !crate::settings::toggles().go_usage {
+        return 0;
+    }
+
+    // 第二步：保存 API 表。工作线程需要它来调 runtime_action；
     // 事件回调本身绝不直接调用（实测会 segfault）。
     worker::install_api(api);
 

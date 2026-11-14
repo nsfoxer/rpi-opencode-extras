@@ -2,10 +2,11 @@
 //!
 //! **为什么不用独立配置文件**：用户已经在维护 `~/.rpi/agent/settings.json`，
 //! 再额外维护一份 `msys2-bash.json` 属于重复劳动。本模块让插件直接读
-//! `settings.json` 的 `msys2Bash` 字段，**不回退**任何独立配置文件：
+//! `settings.json`，**不回退**任何独立配置文件：
 //!
-//! - `settings.json` 存在且含 `msys2Bash` 段 → 启用（段内容由 `config` 校验）
-//! - `settings.json` 存在但不含该段 → 不启用（保留宿主内置 bash）
+//! - 新位置 `opencodeExtras.msys2Bash` 优先；旧顶层 `msys2Bash` 仍兼容
+//! - 段存在且未显式 `"enabled": false` → 启用（段内容由 `config` 校验）
+//! - 段缺失或为 `null` → 不启用（保留宿主内置 bash）
 //! - `settings.json` 缺失或无法解析 → 不启用
 //!
 //! 只读**全局** agent 目录下的 `settings.json`，不读项目级 `.rpi/settings.json`，
@@ -18,46 +19,24 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
-/// `settings.json` 里承载本插件配置的键名。
-const SETTINGS_KEY: &str = "msys2Bash";
-
-/// `settings.json` 的文件名。
-pub const SETTINGS_FILE_NAME: &str = "settings.json";
-
-/// 定位 rpi 的全局 agent 配置目录。
-///
-/// 返回：`RPI_CODING_AGENT_DIR` 优先；否则 `<用户目录>/.rpi/agent`；都拿不到时 `None`。
-pub fn agent_dir() -> Option<PathBuf> {
-    if let Some(dir) = std::env::var_os("RPI_CODING_AGENT_DIR") {
-        if !dir.is_empty() {
-            return Some(PathBuf::from(dir));
-        }
-    }
-    for var in ["USERPROFILE", "HOME"] {
-        if let Some(home) = std::env::var_os(var) {
-            if !home.is_empty() {
-                return Some(PathBuf::from(home).join(".rpi").join("agent"));
-            }
-        }
-    }
-    None
-}
+/// `settings.json` 的文件名（与 crate 级配置模块共用）。
+pub const SETTINGS_FILE_NAME: &str = crate::settings::SETTINGS_FILE_NAME;
 
 /// 全局 `settings.json` 的完整路径。
 ///
 /// 返回：`<agent_dir>/settings.json`；agent 目录不可用时 `None`。
 pub fn settings_path() -> Option<PathBuf> {
-    agent_dir().map(|dir| dir.join(SETTINGS_FILE_NAME))
+    crate::settings::settings_path()
 }
 
 /// 读取 `settings.json` 的 `msys2Bash` 段。
 ///
 /// 返回：
 /// - `Ok(Some((值, 配置文件路径)))`：配置段存在（内容是否合法交给 `config::validate`）。
-/// - `Ok(None)`：`settings.json` 缺失，或不含 `msys2Bash` 段 —— 即未启用。
+/// - `Ok(None)`：`settings.json` 缺失，或没有 `msys2Bash` 段 —— 即未启用。
 /// - `Err(reason)`：文件存在但无法读取 / 不是合法 JSON。
 ///
-/// 注意：`msys2Bash` 显式为 `null` 按"不存在"处理。
+/// 注意：段显式为 `null` 按"不存在"处理。
 pub fn load_section() -> Result<Option<(Value, PathBuf)>, String> {
     // 第一步：定位全局 settings.json。
     let Some(path) = settings_path() else {
@@ -84,9 +63,9 @@ pub fn load_section_at(path: &Path) -> Result<Option<(Value, PathBuf)>, String> 
     let root: Value = serde_json::from_str(&text)
         .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
 
-    // 取插件专属段。缺失或 null 都视为未启用。
-    match root.get(SETTINGS_KEY) {
-        None | Some(Value::Null) => Ok(None),
+    // 取插件专属段（新位置优先，旧顶层位置兼容）。缺失或 null 都视为未启用。
+    match crate::settings::msys2_section(&root) {
+        None => Ok(None),
         Some(section) => Ok(Some((section.clone(), path.to_path_buf()))),
     }
 }
@@ -105,10 +84,7 @@ mod tests {
     /// 并行测试里改），因此复用与 `load_section` 相同的解析步骤。
     fn parse(text: &str) -> Result<Option<Value>, String> {
         let root: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-        match root.get(SETTINGS_KEY) {
-            None | Some(Value::Null) => Ok(None),
-            Some(section) => Ok(Some(section.clone())),
-        }
+        Ok(crate::settings::msys2_section(&root).cloned())
     }
 
     #[test]
@@ -145,6 +121,28 @@ mod tests {
         }"#;
         let section = parse(text).expect("valid").expect("section present");
         assert_eq!(section["envFrom"], "fish");
+    }
+
+    #[test]
+    fn reads_section_from_new_nested_location() {
+        let text = r#"{
+            "theme": "dark",
+            "opencodeExtras": {
+                "msys2Bash": { "msys2Root": "C:\\msys64" }
+            }
+        }"#;
+        let section = parse(text).expect("valid").expect("section present");
+        assert_eq!(section["msys2Root"], "C:\\msys64");
+    }
+
+    #[test]
+    fn new_location_wins_over_legacy_top_level() {
+        let text = r#"{
+            "opencodeExtras": { "msys2Bash": { "msys2Root": "D:\\msys64" } },
+            "msys2Bash": { "msys2Root": "C:\\msys64" }
+        }"#;
+        let section = parse(text).expect("valid").expect("section present");
+        assert_eq!(section["msys2Root"], "D:\\msys64");
     }
 
     #[test]

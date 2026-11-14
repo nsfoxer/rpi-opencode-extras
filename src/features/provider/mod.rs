@@ -37,7 +37,13 @@ const API_STYLE: &str = "openai-completions";
 /// 不调用 `rpi_plugin_sdk::provider::register()`：那会 `declare` 一份模型目录，
 /// 可能覆盖 `models.json` 里用户自己维护的模型定义。
 pub fn register(api: &PluginApi) -> i32 {
-    // 第一步：找出需要包装的 provider。配置缺失时插件照常加载，宿主继续用原有配置。
+    // 第一步：`opencodeExtras.provider` 显式关闭时完全不包装任何 provider。
+    // 注意：关闭后 opencode.ai 端点会因缺少 `x-opencode-session` 返回 400。
+    if !crate::settings::toggles().provider {
+        return 0;
+    }
+
+    // 第二步：找出需要包装的 provider。配置缺失时插件照常加载，宿主继续用原有配置。
     let specs = match crate::config::discover_opencode_providers() {
         Ok(specs) => specs,
         Err(error) => {

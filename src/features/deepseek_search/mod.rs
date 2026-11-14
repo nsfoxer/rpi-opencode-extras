@@ -49,7 +49,12 @@ const TOOL_PROMPT_METADATA: &str = r#"{"promptSnippet":"Search the web via DeepS
 /// 返回：`0` 表示注册完成；`1` 表示宿主没有工具注册槽位；其他非 0 为宿主拒绝注册的
 /// 返回码（由 [`crate::registry::register_all`] 上报）。
 pub fn register(api: &PluginApi) -> i32 {
-    // 第一步：工具注册是唯一硬依赖；宿主未提供该槽位时直接报错，避免静默无工具。
+    // 第一步：`opencodeExtras.deepseekSearch=false` 时不注册工具。
+    if !crate::settings::toggles().deepseek_search {
+        return 0;
+    }
+
+    // 第二步：工具注册是唯一硬依赖；宿主未提供该槽位时直接报错，避免静默无工具。
     let Some(register_tool) = api.register_tool else {
         return 1;
     };

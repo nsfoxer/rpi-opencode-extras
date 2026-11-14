@@ -1,19 +1,54 @@
 # rpi-opencode-extras
 
-rpi 原生 Rust `cdylib` 插件，包含四个互相独立的能力：
+rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 
-| 能力 | 作用 | 是否默认启用 |
-| --- | --- | --- |
-| **`provider`** | 给所有 baseUrl 指向 `opencode.ai` 的 provider 自动注入请求头 | **是**（自动生效，无需配置） |
-| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | **否**（`settings.json` 写配置段才启用；仅 Windows） |
-| **`deepseek-search`** | 提供 `deepseek_search` 工具：调 DeepSeek Search API 检索网页 | **是**（无需配置，首次调用时才读凭据） |
-| **`go-usage`** | 在 TUI 页脚显示 opencode.ai Go 套餐用量（含月度到期倒计时） | **是**（仅交互式 TUI + `opencode.ai` provider 时显示） |
+| 能力 | 作用 | 开关（`opencodeExtras.*`） | 默认 |
+| --- | --- | --- | --- |
+| **`provider`** | 给所有 baseUrl 指向 `opencode.ai` 的 provider 自动注入请求头 | `provider` | **开** |
+| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | `msys2Bash.enabled`（段存在才启用；仅 Windows） | 关 |
+| **`deepseek-search`** | 提供 `deepseek_search` 工具：调 DeepSeek Search API 检索网页 | `deepseekSearch` | **开** |
+| **`go-usage`** | 在 TUI 页脚显示 opencode.ai Go 套餐用量（含月度到期倒计时） | `goUsage` | **开** |
+| **`notify`** | agent 跑完或等待用户回答时发桌面通知 | `notify` | **开** |
 
-- 宿主：rpi `0.22.1`，插件 ABI `4`，Windows x64
-- 产物：**单个** `rpi_opencode_extras.dll`，单个 `export_plugin!` 入口
-- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）
+- 宿主：rpi `0.22.1+`（插件 ABI `4`；已在 rpi `0.24.0` Linux x86_64 上验证）
+- 产物：**单个** `librpi_opencode_extras.so` / `rpi_opencode_extras.dll`，单个 `export_plugin!` 入口
+- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）、`notify-rust`（D-Bus）
 - 不引入 `tokio` / `reqwest`（异步运行时与 provider HTTP 客户端都由宿主提供；
-  `ureq` 仅供 `deepseek-search` 的同步网络调用，跑在它自己的工作线程上）
+  `ureq` 仅供 `deepseek-search` 的同步网络调用，`notify-rust` 只在通知线程里使用）
+
+## 配置开关
+
+所有开关都在 rpi 全局 `settings.json`（`~/.rpi/agent/settings.json`，可用
+`RPI_CODING_AGENT_DIR` 重定位）的 `opencodeExtras` 段里，全部可选：
+
+```jsonc
+{
+  "defaultProvider": "opencode-go",
+  "defaultModel": "deepseek-v4.1-flash",
+
+  "opencodeExtras": {
+    "provider": true,
+    "deepseekSearch": true,
+    "goUsage": true,
+    "notify": true,
+    "msys2Bash": {
+      "enabled": true,
+      "msys2Root": "C:\\msys64"
+    }
+  }
+}
+```
+
+规则：
+
+- 段或字段缺失 ⇒ **默认开启**，行为与旧版本一致。
+- 显式 `false` ⇒ 该能力完全不注册（不订阅事件、不起线程、不注册工具/页脚）。
+- 字段类型不对 ⇒ 打印一行 warning，该字段回落到默认值，不影响插件加载。
+- 配置只在**插件加载时读一次**，修改后需要重启 `rpi`。
+- 历史兼容：`msys2Bash` 曾经位于 `settings.json` 顶层；新位置
+  `opencodeExtras.msys2Bash` 优先，旧顶层位置仍可读。
+- 关闭 `provider` 会影响 opencode.ai：缺少 `x-opencode-session` 时端点返回
+  `400 MissingSessionID`，因此 opencode-go 将不可用。
 
 ---
 
@@ -80,13 +115,14 @@ rpi 原生 Rust `cdylib` 插件，包含四个互相独立的能力：
 
 ### 配置文件就是开关
 
-配置写在 rpi **全局 `settings.json`** 的 `msys2Bash` 段里，**不需要额外的配置文件**。
+配置写在 rpi **全局 `settings.json`** 的 `opencodeExtras.msys2Bash` 段里，**不需要额外的配置文件**。
 
 | 情形 | 行为 |
 | --- | --- |
-| `settings.json` 有 `msys2Bash` 段且校验通过 | 注册 `bash`（**覆盖内置 bash**）+ `get_cmd_result` + `kill_cmd` + `list_cmds` |
-| `settings.json` 不存在，或没有 `msys2Bash` 段 | 不注册任何工具，内置 Git Bash 原样保留 |
-| `msys2Bash` 段存在但无效 | 打印一行 warning，不注册任何工具；不回退 Git Bash、不中断插件加载 |
+| 段存在、未写 `"enabled": false` 且校验通过 | 注册 `bash`（**覆盖内置 bash**）+ `get_cmd_result` + `kill_cmd` + `list_cmds` |
+| 段存在但 `"enabled": false` | 保留配置内容，但不注册任何工具 |
+| `settings.json` 不存在，或没有该段 | 不注册任何工具，内置 Git Bash 原样保留 |
+| 段存在但无效 | 打印一行 warning，不注册任何工具；不回退 Git Bash、不中断插件加载 |
 
 只读**全局** agent 目录（`~/.rpi/agent/settings.json`），**不读**项目级 `.rpi/settings.json`，
 避免同一份工具配置随项目漂移。旧版的独立配置文件 `msys2-bash.json` **已不再读取**。
@@ -140,7 +176,7 @@ MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、
 导出变量（fish 在非 login 模式下同样会 source `~/.config/fish/config.fish`）：
 
 ```json
-{ "msys2Bash": { "msys2Root": "C:\\msys64", "envFrom": "fish" } }
+{ "opencodeExtras": { "msys2Bash": { "msys2Root": "C:\\msys64", "envFrom": "fish" } } }
 ```
 
 实测 `fish -c env` 约 405ms（vs `fish -lc env` 1113ms），且只在**首次**付一次，
@@ -258,6 +294,35 @@ GET https://opencode.ai/inference/go/v1/usage    Authorization: Bearer <key>
 
 ---
 
+## 5. notify：完成/等待桌面通知
+
+**零配置即可用**，默认开启；需要关闭时在 `settings.json` 写
+`"opencodeExtras": { "notify": false }`（不订阅事件、不起通知线程）。
+
+| 触发 | 通知 |
+| --- | --- |
+| run 正常结束（`agent_settled`）且耗时 ≥ 5 秒 | 「rpi · 已完成」，正文 `项目 · 12.3s` |
+| run 因错误结束 | 「rpi · 运行结束（出错）」 |
+| `ask_user` 工具开始（run 进行中） | 「rpi · 等待你回答」，正文是问题原文（截断 120 字） |
+| 选择器/对话框打开（run 进行中） | 「rpi · 等待你回答」；与 `ask_user` 3 秒内去重 |
+| 对话框关闭 / run 开始 | 自动关闭上一条等待通知 |
+| 用户主动中止（`aborted`） | 不提示 |
+
+### 支持性探测
+
+启动时探测一次 `org.freedesktop.Notifications`（D-Bus）。**探测失败就整个功能静默禁用**：
+
+- 本机 TUI、从桌面终端启动的 `rpi --server` → 正常通知
+- systemd/无桌面启动的服务端、纯 SSH 远端 → 不发通知，不打印错误，也不回退到 BEL/OSC
+
+### 实现约束
+
+- 事件回调只做内存读写 + 入队，`Notify` 调用全部在 `rpi-notify` 工作线程执行，不阻塞宿主事件分发
+- 同一类通知用 `NotificationHandle::close()` 替换，不会堆叠
+- 插件关闭时通过 lifecycle 钩子等待工作线程退出，避免 DLL 卸载后仍在执行
+
+---
+
 # 二、如何使用
 
 ## 步骤 1：构建
@@ -333,14 +398,16 @@ rpi --list-models       # opencode-go 的模型应仍然可见
 ~/.rpi/agent/settings.json
 ```
 
-在顶层加一个 `msys2Bash` 对象，最小配置只需一个字段：
+在 `opencodeExtras` 下加一个 `msys2Bash` 对象，最小配置只需一个字段：
 
 ```json
 {
   "theme": "dark",
   "defaultModel": "deepseek-v4.1-flash",
-  "msys2Bash": {
-    "msys2Root": "C:\\msys64"
+  "opencodeExtras": {
+    "msys2Bash": {
+      "msys2Root": "C:\\msys64"
+    }
   }
 }
 ```
@@ -349,12 +416,30 @@ rpi --list-models       # opencode-go 的模型应仍然可见
 
 ```json
 {
-  "msys2Bash": {
-    "msys2Root": "C:\\msys64",
-    "envFrom": "fish"
+  "opencodeExtras": {
+    "msys2Bash": {
+      "msys2Root": "C:\\msys64",
+      "envFrom": "fish"
+    }
   }
 }
 ```
+
+想临时停用但保留配置，加 `"enabled": false`：
+
+```json
+{
+  "opencodeExtras": {
+    "msys2Bash": {
+      "enabled": false,
+      "msys2Root": "C:\\msys64"
+    }
+  }
+}
+```
+
+> 旧版把 `msys2Bash` 放在 `settings.json` 顶层；该位置仍兼容，但新配置建议放进
+> `opencodeExtras`。
 
 > **Windows 路径要写成 `"C:\\msys64"`**（JSON 里反斜杠必须转义）。直接写 `"C:\msys64"`
 > 会让 `settings.json` 整体解析失败，rpi 会报 `invalid escape at line N column M`。
@@ -458,7 +543,8 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 ### 关闭：删掉 settings.json 里的那一段
 
 ```bash
-# 编辑 ~/.rpi/agent/settings.json，删掉整个 "msys2Bash" 对象
+# 编辑 ~/.rpi/agent/settings.json，删掉 opencodeExtras.msys2Bash 对象
+# （或保留配置并加 "enabled": false）
 ```
 
 不需要卸载 DLL。删掉后内置 Git Bash 恢复（重启 rpi 生效）。
@@ -473,8 +559,8 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 | 请求报 `400 MissingSessionID` | provider 未被包装 | 确认 `models.json` 里 baseUrl 就是 `opencode.ai` 或 `*.opencode.ai` |
 | `--list-models` 少了模型 | 插件 declare 了目录 | 本插件不 declare；检查是否有其他插件冲突 |
 | `cp` 报 `Device or resource busy` | rpi 正在运行并持有 DLL | 退出 rpi，或按上文改名法替换 |
-| 工具数仍是 11（期望 15） | `settings.json` 里没有 `msys2Bash` 段，或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
-| `msys2Bash is required` / 未启用 | `settings.json` 缺 `msys2Bash` 段 | 在全局 `~/.rpi/agent/settings.json` 里加该段 |
+| 工具数仍是 11（期望 15） | `settings.json` 里没有 `opencodeExtras.msys2Bash` 段、`enabled=false`，或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
+| `msys2Root is required` / 未启用 | 缺少 `opencodeExtras.msys2Bash` 段 | 在全局 `~/.rpi/agent/settings.json` 里加该段 |
 | `msys2Root is required` | 段里没写 `msys2Root` | 补上，它是唯一必填项 |
 | `msys2Root is not a directory` | 路径写错或不存在 | 确认 `C:\msys64` 存在；JSON 里反斜杠要写 `\\` |
 | `invalid escape at line N column M` | JSON 里的反斜杠没转义 | `"C:\msys64"` 改成 `"C:\\msys64"` 或 `"C:/msys64"` |
@@ -532,7 +618,7 @@ src/
     msys2_shell/
       mod.rs        msys2-bash feature：注册 4 个工具 + bash 提示词 + 工具生命周期 ABI
       config.rs     settings.json 定位、解析、校验、黑名单、环境捕获编排
-      settings.rs   读全局 settings.json 的 msys2Bash 段
+      settings.rs   读全局 settings.json 的 opencodeExtras 段
       env_cache.rs  环境变量捕获（bash/fish）+ 磁盘缓存（%）APPDATA%\rpi）
       job.rs        JobManager：线程、超时杀树、保留策略、cwd 解析
       output.rs     TailBuffer：保留最后 N 字节 + UTF-8 lossy
@@ -652,11 +738,11 @@ rpi --model deepseek/deepseek-flash -p "只回复 DS-OK"    # 不经过插件
 
 # 六、已知限制
 
-- **配置只在加载时读**：`models.json` 与 `settings.json` 的 `msys2Bash` 段都在插件注册
+- **配置只在加载时读**：`models.json` 与 `settings.json` 的 `opencodeExtras` 段都在插件注册
   阶段读取一次，之后修改需要重启 rpi（或触发宿主重载）才会生效。
-- **未知键保留未经上游保证**：本插件把自己的配置放在 `settings.json` 的 `msys2Bash` 键下，
-  依赖 rpi 在重写 `settings.json` 时保留它不认识的键。这一行为**未向上游确认过**；
-  若你发现该键被磨掉，重新加回即可，也可改用后续版本的独立配置项。
+- **未知键保留未经上游保证**：本插件把自己的配置放在 `settings.json` 的 `opencodeExtras` 键下，
+  依赖 rpi 在重写 `settings.json` 时保留它不认识的键。该结构已在 rpi `0.24.0` 实测可用
+  （宿主明确忽略未知字段）；若将来被磨掉，重新加回即可。
 - **不 declare 模型目录**：插件不向宿主声明任何模型，`--list-models` 的内容完全来自
   `models.json`；这也意味着插件无法自带默认模型。
 - **header 注入只看 baseUrl**：若同一 provider 在不同模型上使用不同端点，仍按每次请求的

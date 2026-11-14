@@ -6,6 +6,7 @@
 pub mod deepseek_search;
 pub mod go_usage;
 pub mod msys2_shell;
+pub mod notify;
 pub mod provider;
 
 /// 一个可注册的插件能力。
@@ -35,6 +36,10 @@ pub static FEATURES: &[Feature] = &[
     Feature {
         name: "go-usage",
         register: go_usage::register,
+    },
+    Feature {
+        name: "notify",
+        register: notify::register,
     },
 ];
 

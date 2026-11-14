@@ -18,3 +18,5 @@ serde = { version = "1", features = ["derive"] }
 regex = "1"
 # deepseek-search feature 用：HTTP 请求（rustls，不引入 OpenSSL）
 ureq = { version = "2", features = ["json", "tls"] }
+# notify feature 用：桌面通知（D-Bus org.freedesktop.Notifications，zbus）
+notify-rust = "4"

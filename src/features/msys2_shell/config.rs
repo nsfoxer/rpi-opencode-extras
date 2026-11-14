@@ -49,6 +49,8 @@ pub const TIMEOUT_SECONDS_RANGE: (u64, u64) = (1, 1800);
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawConfig {
+    /// 是否启用。缺省 `true`（段存在即启用）；显式 `false` 时保留配置但不注册工具。
+    enabled: Option<bool>,
     /// MSYS2 安装根目录，例如 `C:\msys64`。
     msys2_root: Option<String>,
     /// `MSYSTEM` 环境变量值，例如 `MINGW64`。
@@ -183,6 +185,11 @@ pub fn load_config() -> Result<Option<BashConfig>, String> {
     // 第三步：把 JSON 值反序列化成原始结构。字段缺失用默认值，未知字段忽略。
     let raw: RawConfig = serde_json::from_value(value)
         .map_err(|error| format!("invalid `msys2Bash` section in {}: {error}", path.display()))?;
+
+    // 第三步半：显式关闭。保留配置内容，但不注册任何工具。
+    if raw.enabled == Some(false) {
+        return Ok(None);
+    }
 
     // 第四步：字段校验 + 夹紧 + 环境捕获。
     validate(raw, &path).map(Some)
@@ -365,6 +372,7 @@ mod tests {
     /// 造一份合法原始配置（root/shell 指向真实存在的位置，由调用方覆盖）。
     fn raw_config(root: &Path, shell: &Path) -> RawConfig {
         RawConfig {
+            enabled: None,
             msys2_root: Some(root.display().to_string()),
             msystem: None,
             shell: Some(shell.display().to_string()),
