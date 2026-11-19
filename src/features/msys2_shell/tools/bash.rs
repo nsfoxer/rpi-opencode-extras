@@ -31,6 +31,11 @@ pub fn submit(
     config: &BashConfig,
     cancelled: &AtomicBool,
 ) -> Result<Result<String, String>, String> {
+    // 低完整性沙箱里 MSYS2 无法初始化；直接返回可操作的原因，不创建 job。
+    if let Some(reason) = crate::features::msys2_shell::sandbox::blocked_reason() {
+        return Ok(Err(error_result(reason)));
+    }
+
     let params = parse_params(raw)?;
 
     // 第一步：command 必填。
@@ -46,12 +51,17 @@ pub fn submit(
     // 第三步：解析 working directory（工具参数 > 宿主 __rpi.cwd > 进程当前目录）。
     let requested = optional_str(&params, "cwd");
     let host = host_cwd(&params);
-    let process_cwd = std::env::current_dir().unwrap_or_else(|_| config.msys2_root.clone());
+    let process_cwd = std::env::current_dir().unwrap_or_else(|_| {
+        config
+            .root
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    });
     let cwd = match resolve_cwd(
         requested.as_deref(),
         host.as_deref(),
         &process_cwd,
-        &config.msys2_root,
+        config.root.as_deref(),
     ) {
         Ok(path) => path,
         Err(reason) => return Ok(Err(error_result(&reason))),
@@ -88,12 +98,7 @@ pub fn submit(
 /// 参数：`job` 目标 job；`id` job id；`wait_seconds` 本次最多等待秒数；
 /// `cancelled` 宿主取消标记。
 /// 返回：完成 → 输出 + details；运行中 → 提示用 get_cmd_result。
-pub fn render_wait(
-    job: &job::Job,
-    id: u64,
-    wait_seconds: u64,
-    cancelled: &AtomicBool,
-) -> String {
+pub fn render_wait(job: &job::Job, id: u64, wait_seconds: u64, cancelled: &AtomicBool) -> String {
     match wait_for(job, wait_seconds, cancelled) {
         Some(view) if view.status == JobStatus::TimedOut => {
             // 总截止到点：契约要求返回 {"error":"timeout","id":N}。
@@ -178,8 +183,8 @@ mod tests {
     #[test]
     fn wait_and_timeout_are_clamped_independently() {
         // waitSeconds 上限 120，timeout 上限 1800：两者不能互相影响。
-        let params = parse_params(r#"{"command":"echo x","waitSeconds":999,"timeout":99999}"#)
-            .expect("ok");
+        let params =
+            parse_params(r#"{"command":"echo x","waitSeconds":999,"timeout":99999}"#).expect("ok");
         let wait = int_field(&params, "waitSeconds", WAIT_SECONDS_RANGE, 30);
         let total = int_field(&params, "timeout", TIMEOUT_SECONDS_RANGE, 900);
         assert_eq!(wait, 120, "waitSeconds must clamp to 120");
@@ -210,6 +215,8 @@ mod tests {
             .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
             .expect("test dir");
         assert!(cwd_is_dir(&dir));
-        assert!(!cwd_is_dir(std::path::Path::new(r"C:\definitely-not-here-9f3a")));
+        assert!(!cwd_is_dir(std::path::Path::new(
+            r"C:\definitely-not-here-9f3a"
+        )));
     }
 }

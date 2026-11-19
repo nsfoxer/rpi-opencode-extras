@@ -5,7 +5,7 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 | 能力 | 作用 | 开关（`opencodeExtras.*`） | 默认 |
 | --- | --- | --- | --- |
 | **`provider`** | 给所有 baseUrl 指向 `opencode.ai` 的 provider 自动注入请求头 | `provider` | **开** |
-| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | `msys2Bash.enabled`（段存在才启用；仅 Windows） | 关 |
+| **`msys2-bash`** | 把 `bash` 工具切换到 MSYS2 (MINGW64) 执行，并提供 3 个命令管理工具 | `bash.enabled`（段存在才启用；仅 Windows） | 关 |
 | **`deepseek-search`** | 提供 `deepseek_search` 工具：调 DeepSeek Search API 检索网页 | `deepseekSearch` | **开** |
 | **`go-usage`** | 在 TUI 页脚显示 opencode.ai Go 套餐用量（含月度到期倒计时） | `goUsage` | **开** |
 | **`notify`** | agent 跑完或等待用户回答时发桌面通知 | `notify` | **开** |
@@ -31,9 +31,10 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
     "deepseekSearch": true,
     "goUsage": true,
     "notify": true,
-    "msys2Bash": {
+    "bash": {
       "enabled": true,
-      "msys2Root": "C:\\msys64"
+      "kind": "msys2",
+      "root": "C:\\msys64"
     }
   }
 }
@@ -45,8 +46,8 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 - 显式 `false` ⇒ 该能力完全不注册（不订阅事件、不起线程、不注册工具/页脚）。
 - 字段类型不对 ⇒ 打印一行 warning，该字段回落到默认值，不影响插件加载。
 - 配置只在**插件加载时读一次**，修改后需要重启 `rpi`。
-- 历史兼容：`msys2Bash` 曾经位于 `settings.json` 顶层；新位置
-  `opencodeExtras.msys2Bash` 优先，旧顶层位置仍可读。
+- 历史兼容：`bash` 段曾叫 `msys2Bash`，`root` 曾叫 `msys2Root`，`path` 曾叫 `shell`；
+  新键优先，旧键仍可读。
 - 关闭 `provider` 会影响 opencode.ai：缺少 `x-opencode-session` 时端点返回
   `400 MissingSessionID`，因此 opencode-go 将不可用。
 
@@ -115,7 +116,7 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 
 ### 配置文件就是开关
 
-配置写在 rpi **全局 `settings.json`** 的 `opencodeExtras.msys2Bash` 段里，**不需要额外的配置文件**。
+配置写在 rpi **全局 `settings.json`** 的 `opencodeExtras.bash` 段里，**不需要额外的配置文件**。
 
 | 情形 | 行为 |
 | --- | --- |
@@ -176,7 +177,7 @@ MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、
 导出变量（fish 在非 login 模式下同样会 source `~/.config/fish/config.fish`）：
 
 ```json
-{ "opencodeExtras": { "msys2Bash": { "msys2Root": "C:\\msys64", "envFrom": "fish" } } }
+{ "opencodeExtras": { "bash": { "root": "C:\\msys64", "envFrom": "fish" } } }
 ```
 
 实测 `fish -c env` 约 405ms（vs `fish -lc env` 1113ms），且只在**首次**付一次，
@@ -187,7 +188,7 @@ MSYS2 的 login shell（`bash -lc`）每次都 source `/etc/profile`（locale、
 > bash 执行，`for i in 1 2 3; do ... done` 这类 bash 语法正常可用。
 
 磁盘缓存位置 `%APPDATA%\rpi\msys2-bash-env.json`，带指纹
-`msys2Root|msystem|shell|envFrom`；任一字段变化即视为失效并重新捕获。
+`root|msystem|path|envFrom`；任一字段变化即视为失效并重新捕获。
 读写失败一律降级为"无缓存"，绝不阻塞插件加载。删掉该文件即可强制下次重新捕获。
 
 ## 3. deepseek-search：网页检索工具
@@ -398,48 +399,76 @@ rpi --list-models       # opencode-go 的模型应仍然可见
 ~/.rpi/agent/settings.json
 ```
 
-在 `opencodeExtras` 下加一个 `msys2Bash` 对象，最小配置只需一个字段：
+在 `opencodeExtras` 下加一个 `bash` 对象。最小配置只需要 `kind` 和 `root`：
 
 ```json
 {
   "theme": "dark",
   "defaultModel": "deepseek-v4.1-flash",
   "opencodeExtras": {
-    "msys2Bash": {
-      "msys2Root": "C:\\msys64"
+    "bash": {
+      "kind": "msys2",
+      "root": "C:\\msys64"
     }
   }
 }
 ```
 
-想继承 fish 的环境变量（推荐，若你用 fish）：
+`kind` 决定实际调用哪个 shell：
+
+| `kind` | 需要 `root` | 默认 `path` | 默认 `msystem` | 说明 |
+| --- | --- | --- | --- | --- |
+| `msys2`（默认） | 是 | `usr/bin/bash.exe` | `MINGW64` | `C:\msys64` |
+| `git-bash` | 是 | `usr/bin/bash.exe` | `MSYS` | Git for Windows：`C:\Program Files\Git` |
+| `powershell` | 否 | `powershell.exe` | — | Windows PowerShell 5.1 |
+| `cmd` | 否 | `cmd.exe` | — | 命令提示符 |
+
+最短配置示例：
+
+```json
+{ "opencodeExtras": { "bash": { "enabled": true, "kind": "git-bash", "root": "C:\\Program Files\\Git" } } }
+{ "opencodeExtras": { "bash": { "enabled": true, "kind": "powershell" } } }
+{ "opencodeExtras": { "bash": { "enabled": true, "kind": "cmd" } } }
+```
+
+想用 PowerShell 7（`pwsh.exe`）时，加 `"path": "pwsh.exe"`。
+
+> `git-bash` 和 `msys2` 都是 MSYS2/Cygwin 运行时，在 `rpis` 沙箱内同样会
+> `0xC0000142`（`microsoft/mxc#1061`）；沙箱内需要 shell 时请用
+> `rpis --no-sandbox`，或把 `kind` 改成 `powershell` / `cmd`。
+
+想继承 fish 的环境变量（推荐，若你用 fish，仅 msys2/git-bash 有效）：
 
 ```json
 {
   "opencodeExtras": {
-    "msys2Bash": {
-      "msys2Root": "C:\\msys64",
+    "bash": {
+      "kind": "msys2",
+      "root": "C:\\msys64",
       "envFrom": "fish"
     }
   }
 }
 ```
 
+> Git Bash 没有 `fish.exe`；`git-bash` + `envFrom: fish` 会打印一次
+> `env capture skipped` 并降级为空环境，建议改用默认的 `envFrom: bash`。
+
 想临时停用但保留配置，加 `"enabled": false`：
 
 ```json
 {
   "opencodeExtras": {
-    "msys2Bash": {
+    "bash": {
       "enabled": false,
-      "msys2Root": "C:\\msys64"
+      "root": "C:\\msys64"
     }
   }
 }
 ```
 
-> 旧版把 `msys2Bash` 放在 `settings.json` 顶层；该位置仍兼容，但新配置建议放进
-> `opencodeExtras`。
+> 旧版把 `msys2Bash` 放在 `settings.json` 顶层；该位置仍兼容。新位置
+> `opencodeExtras.bash` 优先，旧键 `msys2Bash` / `msys2Root` / `shell` 仍可用。
 
 > **Windows 路径要写成 `"C:\\msys64"`**（JSON 里反斜杠必须转义）。直接写 `"C:\msys64"`
 > 会让 `settings.json` 整体解析失败，rpi 会报 `invalid escape at line N column M`。
@@ -452,10 +481,11 @@ rpi --list-models       # opencode-go 的模型应仍然可见
 
 | 字段 | 必需 | 默认 | 说明 |
 | --- | --- | --- | --- |
-| `msys2Root` | **是** | — | MSYS2 安装根目录，必须存在且是目录。没有内置默认值 |
-| `shell` | 否 | `usr/bin/bash.exe` | 相对 `msys2Root`，也可写绝对路径；必须是文件 |
-| `msystem` | 否 | `MINGW64` | 设置 `MSYSTEM` 环境变量 |
-| `envFrom` | 否 | `bash` | 从哪个 shell 捕获环境变量：`bash` / `fish` / `none`。未知值回落 `bash` |
+| `kind` | 否 | `msys2` | 后端：`msys2` / `git-bash` / `powershell` / `cmd` |
+| `root` | msys2/git-bash 必需 | — | shell 安装根目录，必须存在且是目录；`powershell` / `cmd` 不需要 |
+| `path` | 否 | 见上面的 `kind` 表 | 相对 `root` 或绝对路径；旧名 `shell` 仍兼容 |
+| `msystem` | 否 | `MINGW64`（`git-bash` 为 `MSYS`） | 设置 `MSYSTEM` 环境变量，仅 msys2/git-bash |
+| `envFrom` | 否 | `bash` | `bash` / `fish` / `none`，仅 msys2/git-bash；未知值回落 `bash` |
 | `loginShell` | 否 | `false` | `true` 则用 `-lc` 每次 source profile（回到旧行为，每条命令多 ~600ms） |
 | `waitSeconds` | 否 | `30` | `bash` 默认等待秒数，夹紧 1-120 |
 | `defaultTimeoutSeconds` | 否 | `900` | 命令总截止，夹紧 1-1800 |
@@ -543,7 +573,7 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 ### 关闭：删掉 settings.json 里的那一段
 
 ```bash
-# 编辑 ~/.rpi/agent/settings.json，删掉 opencodeExtras.msys2Bash 对象
+# 编辑 ~/.rpi/agent/settings.json，删掉 opencodeExtras.bash 对象
 # （或保留配置并加 "enabled": false）
 ```
 
@@ -559,13 +589,13 @@ rpi -p "用 bash 执行 sleep 40，报告 id" \
 | 请求报 `400 MissingSessionID` | provider 未被包装 | 确认 `models.json` 里 baseUrl 就是 `opencode.ai` 或 `*.opencode.ai` |
 | `--list-models` 少了模型 | 插件 declare 了目录 | 本插件不 declare；检查是否有其他插件冲突 |
 | `cp` 报 `Device or resource busy` | rpi 正在运行并持有 DLL | 退出 rpi，或按上文改名法替换 |
-| 工具数仍是 11（期望 15） | `settings.json` 里没有 `opencodeExtras.msys2Bash` 段、`enabled=false`，或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
-| `msys2Root is required` / 未启用 | 缺少 `opencodeExtras.msys2Bash` 段 | 在全局 `~/.rpi/agent/settings.json` 里加该段 |
-| `msys2Root is required` | 段里没写 `msys2Root` | 补上，它是唯一必填项 |
-| `msys2Root is not a directory` | 路径写错或不存在 | 确认 `C:\msys64` 存在；JSON 里反斜杠要写 `\\` |
+| 工具数仍是 11（期望 15） | `settings.json` 里没有 `opencodeExtras.bash` 段、`enabled=false`，或校验失败 | 看启动输出的 `msys2-bash disabled: ...` 那行 |
+| `root is required` / 未启用 | 缺少 `opencodeExtras.bash` 段 | 在全局 `~/.rpi/agent/settings.json` 里加该段 |
+| `root is required` | 段里没写 `root` | 补上，它是唯一必填项 |
+| `root is not a directory` | 路径写错或不存在 | 确认 `C:\msys64` 存在；JSON 里反斜杠要写 `\\` |
 | `invalid escape at line N column M` | JSON 里的反斜杠没转义 | `"C:\msys64"` 改成 `"C:\\msys64"` 或 `"C:/msys64"` |
 | `Could not read config: invalid JSON` | 整份 `settings.json` 坏了 | 不只是插件失效，rpi 也启不来；修好 JSON |
-| `invalid \`msys2Bash\` section` | 段结构不对（如写成了字符串） | 段必须是 JSON 对象 |
+| `invalid \`bash\` section` | 段结构不对（如写成了字符串） | 段必须是 JSON 对象 |
 | `shell is not a file` | `shell` 相对路径拼错 | 默认应是 `usr/bin/bash.exe` |
 | `envVars=0` + `env capture skipped` | 捕获失败（shell 不存在 / 非零退出） | 命令仍可用；检查 `envFrom` 指定的 shell 是否存在 |
 | fish 变量没继承 | `envFrom` 不是 `fish`，或变量不是 `set -xg` 导出型 | 设 `"envFrom": "fish"`；非导出变量无法继承 |
@@ -636,13 +666,13 @@ src/
 
 ### msys2-bash 的执行细节
 
-- 可执行：`<msys2Root>/<shell>`
+- 可执行：`<root>/<shell>`
 - 参数：`loginShell=false`（默认）→ `-c "<command>"`；`loginShell=true` → `-lc "<command>"`
 - 环境：`MSYSTEM=<msystem>`、`CHERE_INVOKING=1`、`LANG=C.UTF-8`，
   非 login 模式下额外注入启动期捕获的环境变量（见上文"启动性能"）
 - 捕获：`<shell> -c env`（不是 `-lc`；fish 非 login 也会 source `config.fish`），
   设置 `MSYSTEM` + `MSYS2_PATH_TYPE=inherit` + `MSYSTEM_NOSTART=yes`
-- 缓存：`%APPDATA%\rpi\msys2-bash-env.json`，指纹 `msys2Root|msystem|shell|envFrom`，
+- 缓存：`%APPDATA%\rpi\msys2-bash-env.json`，指纹 `root|msystem|path|envFrom`，
   原子写（先写 `.tmp` 再 rename），空表不写入、读取时也拒绝空表
 - `cwd` 优先级：工具参数 `cwd` → 宿主 `__rpi.cwd` → 进程当前目录
   支持 MSYS2 路径：`/c/Users/x` → `C:\Users\x`；`/tmp` → `C:\msys64\tmp`
@@ -755,7 +785,7 @@ rpi --model deepseek/deepseek-flash -p "只回复 DS-OK"    # 不经过插件
   `cfg!(target_os = "windows")` 门禁：非 Windows 下不读配置、不捕获环境、不注册任何
   工具、也不打印诊断（`provider` feature 不受影响）。
 - **`bash` 覆盖内置工具**：启用后宿主内置的 Git Bash 版本被插件的 MSYS2 版本替代。
-  想恢复内置 bash，删掉 `settings.json` 里的 `msys2Bash` 段即可（无需卸载 DLL）。
+  想恢复内置 bash，删掉 `settings.json` 里的 `bash` 段即可（无需卸载 DLL）。
 - **不继承 fish 的语法与函数**：`envFrom: fish` 只继承 `set -xg` 导出的环境变量；
   fish 的函数、`abbr`、别名、以及非导出变量都不会进入 bash 子进程。
 - **`poll` 是同步阻塞的**：宿主工具驱动没有 wake 回调，工具在 `poll` 内最多阻塞

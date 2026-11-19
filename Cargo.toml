@@ -20,3 +20,11 @@ regex = "1"
 ureq = { version = "2", features = ["json", "tls"] }
 # notify feature 用：桌面通知（D-Bus org.freedesktop.Notifications，zbus）
 notify-rust = "4"
+
+# msys2-bash 的沙箱检测：读取当前进程令牌的完整性级别。
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }

@@ -10,6 +10,7 @@ pub mod config;
 pub mod env_cache;
 pub mod job;
 pub mod output;
+pub mod sandbox;
 pub mod settings;
 pub mod tools;
 
@@ -65,7 +66,17 @@ pub fn register(api: &PluginApi) -> i32 {
         return 0;
     }
 
-    // 第五步：依次注册四个工具。任一失败即停止并回报（不留半套工具）。
+    // 第五步：沙箱检测。Low integrity（rpi-sandbox 的 MXC PSEC 后端）里
+    // MSYS2 无法初始化。仍然注册工具，但每次 bash 调用都会返回明确原因。
+    // 默认不写 stderr：TUI 已经接管屏幕，启动输出会落进输入区；需要诊断时
+    // 设置 RPI_OPENCODE_EXTRAS_VERBOSE=1。
+    if let Some(reason) = sandbox::blocked_reason() {
+        if std::env::var_os("RPI_OPENCODE_EXTRAS_VERBOSE").is_some() {
+            eprintln!("rpi-opencode-extras: msys2-bash unavailable: {reason}");
+        }
+    }
+
+    // 第六步：依次注册四个工具。任一失败即停止并回报（不留半套工具）。
     for spec in TOOL_SPECS {
         let rc = register_one(register_tool, spec);
         if rc != 0 {
@@ -77,7 +88,7 @@ pub fn register(api: &PluginApi) -> i32 {
         }
     }
 
-    // 第五步：给 bash 追加提示词说明。只有工具真的注册了，模型才看得到这段。
+    // 第七步：给 bash 追加提示词说明。只有工具真的注册了，模型才看得到这段。
     if let Some(register_tool_prompt) = api.register_tool_prompt {
         let rc = register_tool_prompt(
             StbStringRef::from_str(tools::BASH),
@@ -89,17 +100,19 @@ pub fn register(api: &PluginApi) -> i32 {
         }
     }
 
-    eprintln!(
-        "rpi-opencode-extras: msys2-bash enabled (config={}, shell={}, wait={}s, timeout={}s, loginShell={}, envFrom={}, envVars={}, captureTimeout={}s)",
-        config.source.display(),
-        config.shell.display(),
-        config.wait_seconds,
-        config.default_timeout_seconds,
-        config.login_shell,
-        config.env_from.as_str(),
-        config.login_env.len(),
-        env_cache::capture_timeout_seconds()
-    );
+    if std::env::var_os("RPI_OPENCODE_EXTRAS_VERBOSE").is_some() {
+        eprintln!(
+            "rpi-opencode-extras: msys2-bash enabled (config={}, shell={}, wait={}s, timeout={}s, loginShell={}, envFrom={}, envVars={}, captureTimeout={}s)",
+            config.source.display(),
+            config.shell.display(),
+            config.wait_seconds,
+            config.default_timeout_seconds,
+            config.login_shell,
+            config.env_from.as_str(),
+            config.login_env.len(),
+            env_cache::capture_timeout_seconds()
+        );
+    }
     0
 }
 

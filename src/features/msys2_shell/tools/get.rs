@@ -20,11 +20,7 @@ use std::sync::atomic::AtomicBool;
 /// - `cancelled`：宿主取消标记（只影响等待，不杀进程）。
 ///
 /// 返回：`Ok(json)` 或 `Err(reason)`（参数不是合法对象）。
-pub fn run(
-    raw: &str,
-    config: &BashConfig,
-    cancelled: &AtomicBool,
-) -> Result<String, String> {
+pub fn run(raw: &str, config: &BashConfig, cancelled: &AtomicBool) -> Result<String, String> {
     let params = parse_params(raw)?;
     let id = required_id(&params)?;
     let wait_seconds = int_field(
@@ -103,14 +99,15 @@ fn details_for(view: &job::JobView) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::features::msys2_shell::config::{
-        BashConfig, DEFAULT_MAX_JOBS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECONDS,
+        BashConfig, ShellKind, DEFAULT_MAX_JOBS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_TIMEOUT_SECONDS,
     };
     use crate::features::msys2_shell::env_cache::{EnvFrom, LoginEnv};
     use std::path::PathBuf;
 
     fn stub_config() -> BashConfig {
         BashConfig {
-            msys2_root: PathBuf::from(r"C:\msys64"),
+            kind: ShellKind::Msys2,
+            root: Some(PathBuf::from(r"C:\msys64")),
             msystem: "MINGW64".to_string(),
             shell: PathBuf::from(r"C:\msys64\usr\bin\bash.exe"),
             wait_seconds: 30,

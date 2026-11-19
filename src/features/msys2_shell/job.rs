@@ -4,7 +4,7 @@
 //! 完成后把终态写回共享状态。工具层的 `execute` 只创建 job 并起线程，然后最多等
 //! `waitSeconds` 秒；`cancel` 只置"停止等待"标志，**不杀进程**。
 
-use crate::features::msys2_shell::config::BashConfig;
+use crate::features::msys2_shell::config::{BashConfig, ShellKind};
 use crate::features::msys2_shell::output::TailBuffer;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -127,7 +127,9 @@ impl Job {
     /// 共享状态。
     fn state(&self) -> MutexGuard<'_, JobState> {
         // 中毒时取回内部值继续用：单个 job 失败不应连累整个 manager。
-        self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// 置“停止等待”标志。幂等，不杀进程。
@@ -298,6 +300,7 @@ impl JobManager {
         let (job, id) = self.register(command, config.max_output_bytes);
         // 线程拿到必要的克隆，配置本体不进入线程（避免无谓的整份复制）。
         let state = Arc::clone(&job.state);
+        let kind = config.kind;
         let shell = config.shell.clone();
         let msystem = config.msystem.clone();
         // 命令行与注入环境在启动期已定，这里只搬走需要的东西。
@@ -311,7 +314,15 @@ impl JobManager {
             .name(format!("msys2-bash-{id}"))
             .spawn(move || {
                 run_job(
-                    state, shell, msystem, login_shell, login_env, command, cwd, timeout,
+                    state,
+                    kind,
+                    shell,
+                    msystem,
+                    login_shell,
+                    login_env,
+                    command,
+                    cwd,
+                    timeout,
                 )
             });
 
@@ -378,6 +389,7 @@ fn kill_process_tree(pid: u32) {
 /// 进程必须一直跑到自然结束或被 `kill_cmd`/超时杀掉。
 fn run_job(
     state: Arc<Mutex<JobState>>,
+    kind: ShellKind,
     shell: PathBuf,
     msystem: String,
     login_shell: bool,
@@ -386,22 +398,35 @@ fn run_job(
     cwd: PathBuf,
     timeout: Duration,
 ) {
-    // 第一步：构造子进程。stdout/stderr 都走 piped，稍后由两个线程分别读取。
+    // 第一步：按后端构造子进程。stdout/stderr 都走 piped，稍后由两个线程读取。
     //
-    // 关键性能选择：默认用 `-c`（非 login）而不是 `-lc`。MSYS2 的 login shell
-    // 每次都要 source /etc/profile，实测单次命令多花约 540~640ms；而 `-c` 配合
-    // 启动期注入的环境变量能得到同样的 PATH / 自定义变量（见 env_cache 注释）。
+    // MSYS2 的关键性能选择：默认用 `-c`（非 login）而不是 `-lc`。MSYS2 的 login
+    // shell 每次都要 source /etc/profile，实测单次命令多花约 540~640ms；而 `-c`
+    // 配合启动期注入的环境变量能得到同样的 PATH / 自定义变量（见 env_cache 注释）。
     let mut builder = Command::new(&shell);
-    builder
-        .arg(if login_shell { "-lc" } else { "-c" })
-        .arg(&command)
-        .current_dir(&cwd)
-        .env("MSYSTEM", &msystem)
-        .env("CHERE_INVOKING", "1")
-        .env("LANG", "C.UTF-8");
-    // 注入启动期捕获的环境变量（登录模式不需要，profile 会自己建好）。
-    if !login_shell && !login_env.is_empty() {
-        builder.envs(&login_env);
+    builder.current_dir(&cwd);
+    match kind {
+        ShellKind::Msys2 | ShellKind::GitBash => {
+            builder
+                .arg(if login_shell { "-lc" } else { "-c" })
+                .arg(&command)
+                .env("MSYSTEM", &msystem)
+                .env("CHERE_INVOKING", "1")
+                .env("LANG", "C.UTF-8");
+            // 注入启动期捕获的环境变量（登录模式不需要，profile 会自己建好）。
+            if !login_shell && !login_env.is_empty() {
+                builder.envs(&login_env);
+            }
+        }
+        ShellKind::PowerShell => {
+            // -NoProfile 避免用户 profile 影响输出；-NonInteractive 防止脚本
+            // 等待输入把 job 卡到超时。
+            builder.args(["-NoProfile", "-NonInteractive", "-Command", &command]);
+        }
+        ShellKind::Cmd => {
+            // /D 禁用 AutoRun，/S 保留引号语义，/C 执行后退出。
+            builder.args(["/D", "/S", "/C", &command]);
+        }
     }
     builder
         .stdin(Stdio::null())
@@ -426,8 +451,14 @@ fn run_job(
         state.pid = pid;
     }
     // 第三步：stdout 与 stderr 各起一个读取线程，合并写入同一个缓冲。
-    let stdout_reader = child.stdout.take().map(|stdout| spawn_reader(stdout, Arc::clone(&state)));
-    let stderr_reader = child.stderr.take().map(|stderr| spawn_reader(stderr, Arc::clone(&state)));
+    let stdout_reader = child
+        .stdout
+        .take()
+        .map(|stdout| spawn_reader(stdout, Arc::clone(&state)));
+    let stderr_reader = child
+        .stderr
+        .take()
+        .map(|stderr| spawn_reader(stderr, Arc::clone(&state)));
 
     // 第四步：等待退出，超时则杀进程树。
     let deadline = Instant::now() + timeout;
@@ -525,7 +556,7 @@ pub fn resolve_cwd(
     requested: Option<&str>,
     host_cwd: Option<&str>,
     fallback: &Path,
-    msys2_root: &Path,
+    msys2_root: Option<&Path>,
 ) -> Result<PathBuf, String> {
     // 第一步：按优先级取第一个非空路径。
     let raw = requested
@@ -559,7 +590,7 @@ pub fn resolve_cwd(
 /// 返回：
 /// - `/c/Users/x` → `C:\Users\x`
 /// - `/tmp`、`/home/x` 等内部路径 → `<msys2_root>\tmp`、`<msys2_root>\home\x`
-pub fn msys2_to_windows(path: &str, msys2_root: &Path) -> PathBuf {
+pub fn msys2_to_windows(path: &str, msys2_root: Option<&Path>) -> PathBuf {
     let normalized = path.replace('\\', "/");
     let trimmed = normalized.trim_start_matches('/');
 
@@ -577,11 +608,15 @@ pub fn msys2_to_windows(path: &str, msys2_root: &Path) -> PathBuf {
         }
     }
 
-    // 第二步：内部虚拟路径：挂到 msys2_root 下。
+    // 第二步：内部虚拟路径：挂到 msys2_root 下。非 msys2 后端没有这个映射，
+    // 保持原样让调用方报 "not a directory"。
+    let Some(root) = msys2_root else {
+        return PathBuf::from(path);
+    };
     if trimmed.is_empty() {
-        return msys2_root.to_path_buf();
+        return root.to_path_buf();
     }
-    msys2_root.join(trimmed.replace('/', "\\"))
+    root.join(trimmed.replace('/', "\\"))
 }
 
 #[cfg(test)]
@@ -609,7 +644,11 @@ mod tests {
         }
 
         let listed = manager.list();
-        assert_eq!(listed.len(), 20, "must retain exactly maxJobs finished jobs");
+        assert_eq!(
+            listed.len(),
+            20,
+            "must retain exactly maxJobs finished jobs"
+        );
         // 保留的必须是最新的 20 条（id 6..=25），最旧的 1..=5 已淘汰。
         assert_eq!(listed.first().map(|view| view.id), Some(6));
         assert_eq!(listed.last().map(|view| view.id), Some(25));
@@ -642,10 +681,16 @@ mod tests {
             .get(id)
             .expect("job must still exist")
             .stop_waiting();
-        assert_eq!(job.status(), JobStatus::Running, "cancel must not kill the job");
+        assert_eq!(
+            job.status(),
+            JobStatus::Running,
+            "cancel must not kill the job"
+        );
 
         // 取消后 job 依旧能按 id 查到（这就是 get_cmd_result 的取数路径）。
-        let found = manager.get(id).expect("job must remain queryable after cancel");
+        let found = manager
+            .get(id)
+            .expect("job must remain queryable after cancel");
         assert_eq!(found.status(), JobStatus::Running);
 
         // 模拟进程自然结束：结果仍可取回。
@@ -722,15 +767,26 @@ mod tests {
     fn msys2_paths_convert_to_windows_paths() {
         let root = Path::new(r"C:\msys64");
         assert_eq!(
-            msys2_to_windows("/c/Users/test", root),
+            msys2_to_windows("/c/Users/test", Some(root)),
             PathBuf::from(r"C:\Users\test")
         );
         assert_eq!(
-            msys2_to_windows("/d/data/files", root),
+            msys2_to_windows("/d/data/files", Some(root)),
             PathBuf::from(r"D:\data\files")
         );
-        assert_eq!(msys2_to_windows("/tmp", root), PathBuf::from(r"C:\msys64\tmp"));
-        assert_eq!(msys2_to_windows("/", root), PathBuf::from(r"C:\msys64"));
+        assert_eq!(
+            msys2_to_windows("/tmp", Some(root)),
+            PathBuf::from(r"C:\msys64\tmp")
+        );
+        assert_eq!(
+            msys2_to_windows("/", Some(root)),
+            PathBuf::from(r"C:\msys64")
+        );
+        assert_eq!(
+            msys2_to_windows("/tmp", None),
+            PathBuf::from("/tmp"),
+            "non-msys2 backends keep the path unchanged"
+        );
     }
 
     #[test]
@@ -739,15 +795,16 @@ mod tests {
         let root = Path::new(r"C:\msys64");
         let requested = dir.display().to_string();
 
-        let resolved = resolve_cwd(Some(&requested), Some(r"C:\nope"), &dir, root).expect("ok");
+        let resolved =
+            resolve_cwd(Some(&requested), Some(r"C:\nope"), &dir, Some(root)).expect("ok");
         assert_eq!(resolved, dir);
 
         // 只给 host_cwd 时用它（这里给一个存在的目录）。
-        let resolved = resolve_cwd(Some("  "), Some(&requested), &dir, root).expect("ok");
+        let resolved = resolve_cwd(Some("  "), Some(&requested), &dir, Some(root)).expect("ok");
         assert_eq!(resolved, dir);
 
         // 都没有 → 兜底。
-        let resolved = resolve_cwd(None, None, &dir, root).expect("ok");
+        let resolved = resolve_cwd(None, None, &dir, Some(root)).expect("ok");
         assert_eq!(resolved, dir);
     }
 
@@ -756,7 +813,7 @@ mod tests {
         let dir = temp_root();
         let root = Path::new(r"C:\msys64");
         let missing = r"C:\definitely-not-here-9f3a";
-        assert!(resolve_cwd(Some(missing), None, &dir, root).is_err());
+        assert!(resolve_cwd(Some(missing), None, &dir, Some(root)).is_err());
     }
 
     #[test]
@@ -772,7 +829,11 @@ mod tests {
         }
         let view = job.view();
         assert!(view.truncated);
-        assert!(view.output.contains("[truncated 8 bytes]"), "{}", view.output);
+        assert!(
+            view.output.contains("[truncated 8 bytes]"),
+            "{}",
+            view.output
+        );
         assert!(view.output.ends_with("89ABCDEF"), "{}", view.output);
     }
 }

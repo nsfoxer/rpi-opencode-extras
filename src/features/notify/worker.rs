@@ -80,7 +80,13 @@ pub fn still_running() -> bool {
 
 fn run(receiver: Receiver<Command>) {
     // 能力探测。失败即禁用：不打印、不回退（纯 SSH 远端要完全安静）。
+    // Unix probes the D-Bus server before doing any work; the Windows backend
+    // is winrt-based and has no equivalent probe, so assume it works and turn
+    // notifications off after the first failed `show`.
+    #[cfg(unix)]
     let mut enabled = notify_rust::get_server_information().is_ok();
+    #[cfg(not(unix))]
+    let mut enabled = true;
     let mut waiting: Option<NotificationHandle> = None;
     let mut done: Option<NotificationHandle> = None;
 
@@ -152,7 +158,11 @@ fn show(
 }
 
 fn close(handle: &mut Option<NotificationHandle>) {
+    #[cfg(unix)]
     if let Some(handle) = handle.take() {
         handle.close();
     }
+    // The winrt backend has no `close`; dropping the handle is enough.
+    #[cfg(not(unix))]
+    let _ = handle.take();
 }

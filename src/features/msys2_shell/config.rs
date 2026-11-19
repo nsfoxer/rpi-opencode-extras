@@ -1,9 +1,14 @@
-//! `msys2-bash` 的配置定位、解析与校验。
+//! `bash` 工具的配置定位、解析与校验。
 //!
-//! **配置来自全局 `settings.json` 的 `msys2Bash` 段**（见 [`super::settings`]）。
-//! 该段不存在时返回 `Ok(None)`，调用方据此不注册任何工具（保留宿主内置 bash）。
-//! 配置存在但无效时返回 `Err`，调用方打印一行 warning 后同样不注册——绝不回退到
-//! Git Bash，也不中断插件加载。
+//! **配置来自全局 `settings.json` 的 `opencodeExtras.bash` 段**（见
+//! [`super::settings`]），并兼容旧的 `opencodeExtras.msys2Bash` / 顶层
+//! `msys2Bash`。该段不存在时返回 `Ok(None)`，调用方据此不注册任何工具
+//! （保留宿主内置 bash）。配置存在但无效时返回 `Err`，调用方打印一行 warning
+//! 后同样不注册——绝不回退到 Git Bash，也不中断插件加载。
+//!
+//! `kind` 选择后端：`msys2`（默认，`root` 指向 MSYS2 安装目录）、
+//! `powershell`、`cmd`。后两者不需要 `root`，直接使用系统 PATH 中的
+//! `powershell.exe` / `cmd.exe`，也可以用 `path` 指定绝对路径。
 //!
 //! **不再读取独立的 `msys2-bash.json`**：`MSYS2_BASH_CONFIG` 只用于指定
 //! `settings.json` 的位置（便于测试与非常规布局），缺失时走 rpi 默认 agent 目录。
@@ -15,11 +20,17 @@ use std::path::{Path, PathBuf};
 /// 环境变量：显式指定 `settings.json` 所在目录（便于测试与非常规布局）。
 const CONFIG_DIR_ENV_VAR: &str = "MSYS2_BASH_CONFIG_DIR";
 
-/// 默认 `MSYSTEM` 环境变量值。
+/// 默认 `MSYSTEM` 环境变量值（仅 `kind=msys2`）。
 const DEFAULT_MSYSTEM: &str = "MINGW64";
 
-/// 默认 shell 相对路径（相对 `msys2Root`）。
-const DEFAULT_SHELL: &str = "usr/bin/bash.exe";
+/// 默认 MSYS2 shell 相对路径（相对 `root`）。
+const DEFAULT_MSYS2_SHELL: &str = "usr/bin/bash.exe";
+
+/// 默认 PowerShell 可执行文件（PATH 解析）。
+const DEFAULT_POWERSHELL: &str = "powershell.exe";
+
+/// 默认 cmd 可执行文件（PATH 解析）。
+const DEFAULT_CMD: &str = "cmd.exe";
 
 /// 默认单次阻塞等待秒数。
 pub const DEFAULT_WAIT_SECONDS: u64 = 30;
@@ -43,19 +54,62 @@ pub const TIMEOUT_SECONDS_RANGE: (u64, u64) = (1, 1800);
 // 反序列化结构
 // ===========================================================================
 
-/// `msys2Bash` 段的原始结构（全部字段可选，缺省取默认值）。
+/// 后端 shell 类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    /// MSYS2 的 bash（默认）。
+    Msys2,
+    /// Git for Windows 自带的 MSYS2 bash。
+    GitBash,
+    /// Windows PowerShell（`powershell.exe`）。
+    PowerShell,
+    /// Windows 命令提示符（`cmd.exe`）。
+    Cmd,
+}
+
+impl ShellKind {
+    /// 解析 `kind` 字段；缺省为 `msys2`。
+    fn parse(text: Option<&str>) -> Result<Self, String> {
+        match text.map(str::trim).filter(|value| !value.is_empty()) {
+            None => Ok(Self::Msys2),
+            Some(value) => match value.to_ascii_lowercase().as_str() {
+                "msys2" | "bash" => Ok(Self::Msys2),
+                "git-bash" | "gitbash" => Ok(Self::GitBash),
+                "powershell" | "pwsh" => Ok(Self::PowerShell),
+                "cmd" => Ok(Self::Cmd),
+                other => Err(format!(
+                    "unsupported bash kind `{other}`; expected msys2, git-bash, powershell, or cmd"
+                )),
+            },
+        }
+    }
+
+    /// 该后端的默认 `MSYSTEM`。Git Bash 原生用 `MSYS`，MSYS2 用 `MINGW64`。
+    fn default_msystem(self) -> &'static str {
+        match self {
+            Self::GitBash => "MSYS",
+            _ => DEFAULT_MSYSTEM,
+        }
+    }
+}
+
+/// `bash` 段的原始结构（全部字段可选，缺省取默认值）。
 ///
-/// 注意：`msys2Root` **没有内置默认值语义**——缺失时无法定位 shell，按无效处理。
+/// 注意：`root` 只对 `kind=msys2` 必要——缺失时无法定位 shell，按无效处理。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawConfig {
     /// 是否启用。缺省 `true`（段存在即启用）；显式 `false` 时保留配置但不注册工具。
     enabled: Option<bool>,
-    /// MSYS2 安装根目录，例如 `C:\msys64`。
+    /// 后端类型：`msys2`（默认）/ `powershell` / `cmd`。
+    kind: Option<String>,
+    /// shell 安装根目录。新名 `root`，旧名 `msys2Root` 兼容。
+    #[serde(rename = "root", alias = "msys2Root")]
     msys2_root: Option<String>,
-    /// `MSYSTEM` 环境变量值，例如 `MINGW64`。
+    /// `MSYSTEM` 环境变量值，例如 `MINGW64`（仅 `kind=msys2`）。
     msystem: Option<String>,
-    /// shell 相对 `msys2Root` 的路径，例如 `usr/bin/bash.exe`。
+    /// 可执行文件（相对 `root` 或绝对路径）。新名 `path`，旧名 `shell` 兼容。
+    #[serde(rename = "path", alias = "shell")]
     shell: Option<String>,
     /// bash 工具默认阻塞等待秒数。
     wait_seconds: Option<u64>,
@@ -67,7 +121,7 @@ struct RawConfig {
     max_jobs: Option<u64>,
     /// 是否用 login shell 启动命令（默认 `false`，即吃上 `envFrom` 的性能优化）。
     login_shell: Option<bool>,
-    /// 环境变量来源：`bash` / `fish` / `none`（默认 `bash`）。
+    /// 环境变量来源：`bash` / `fish` / `none`（默认 `bash`，仅 `kind=msys2`）。
     env_from: Option<String>,
     /// 安全黑名单配置。
     security: Option<RawSecurity>,
@@ -86,11 +140,13 @@ struct RawSecurity {
 /// 校验通过、可直接使用的配置。
 #[derive(Debug, Clone)]
 pub struct BashConfig {
-    /// MSYS2 安装根目录（已确认存在且是目录）。
-    pub msys2_root: PathBuf,
-    /// `MSYSTEM` 环境变量值。
+    /// 后端类型。
+    pub kind: ShellKind,
+    /// MSYS2 安装根目录（仅 `kind=msys2`）。
+    pub root: Option<PathBuf>,
+    /// `MSYSTEM` 环境变量值（仅 `kind=msys2`；其它 kind 为空串）。
     pub msystem: String,
-    /// shell 可执行文件的绝对路径（已确认存在且是文件）。
+    /// 实际可执行文件（msys2 为绝对路径；powershell/cmd 可为 PATH 名）。
     pub shell: PathBuf,
     /// bash 工具默认阻塞等待秒数（已夹紧到 1-120）。
     pub wait_seconds: u64,
@@ -146,10 +202,12 @@ pub fn config_candidates() -> Vec<PathBuf> {
     for var in ["USERPROFILE", "HOME"] {
         if let Some(home) = std::env::var_os(var) {
             if !home.is_empty() {
-                push(PathBuf::from(home)
-                    .join(".rpi")
-                    .join("agent")
-                    .join(settings::SETTINGS_FILE_NAME));
+                push(
+                    PathBuf::from(home)
+                        .join(".rpi")
+                        .join("agent")
+                        .join(settings::SETTINGS_FILE_NAME),
+                );
             }
         }
     }
@@ -200,44 +258,10 @@ pub fn load_config() -> Result<Option<BashConfig>, String> {
 /// 参数：`raw` 反序列化结果；`path` 配置文件路径（写进 `source`，仅用于诊断）。
 /// 返回：`Ok(BashConfig)` 或 `Err(原因)`。
 fn validate(raw: RawConfig, path: &Path) -> Result<BashConfig, String> {
-    // 第一步：msys2Root 必填且必须存在（不存在即无效，不回退）。
-    let root_text = raw
-        .msys2_root
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .ok_or_else(|| "msys2Root is required".to_string())?;
-    let msys2_root = PathBuf::from(root_text);
-    if !msys2_root.is_dir() {
-        return Err(format!("msys2Root is not a directory: {root_text}"));
-    }
+    // 第一步：后端类型。缺省 msys2，保持旧配置行为。
+    let kind = ShellKind::parse(raw.kind.as_deref())?;
 
-    // 第二步：shell 相对 root 解析；绝对路径则直接使用。
-    let shell_text = raw
-        .shell
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .unwrap_or(DEFAULT_SHELL);
-    let shell = if Path::new(shell_text).is_absolute() {
-        PathBuf::from(shell_text)
-    } else {
-        msys2_root.join(shell_text)
-    };
-    if !shell.is_file() {
-        return Err(format!("shell is not a file: {}", shell.display()));
-    }
-
-    // 第三步：msystem 空串视为未配置，回落到 MINGW64。
-    let msystem = raw
-        .msystem
-        .as_deref()
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .unwrap_or(DEFAULT_MSYSTEM)
-        .to_string();
-
-    // 第四步：数值字段夹紧到契约范围；越界不报错，按边界处理并在日志里可见。
+    // 第二步：数值字段夹紧到契约范围；越界不报错，按边界处理并在日志里可见。
     let wait_seconds = raw
         .wait_seconds
         .unwrap_or(DEFAULT_WAIT_SECONDS)
@@ -248,7 +272,10 @@ fn validate(raw: RawConfig, path: &Path) -> Result<BashConfig, String> {
         .clamp(TIMEOUT_SECONDS_RANGE.0, TIMEOUT_SECONDS_RANGE.1);
 
     // maxOutputBytes 必须 > 0；给 0 属于非法配置（否则永远截断成空）。
-    let max_output_bytes = match raw.max_output_bytes.unwrap_or(DEFAULT_MAX_OUTPUT_BYTES as u64) {
+    let max_output_bytes = match raw
+        .max_output_bytes
+        .unwrap_or(DEFAULT_MAX_OUTPUT_BYTES as u64)
+    {
         0 => return Err("maxOutputBytes must be > 0".to_string()),
         value => value.min(usize::MAX as u64) as usize,
     };
@@ -259,10 +286,10 @@ fn validate(raw: RawConfig, path: &Path) -> Result<BashConfig, String> {
         value => value.min(usize::MAX as u64) as usize,
     };
 
-    // 第五步：编译黑名单。正则非法属于配置无效（不静默跳过）。
+    // 第三步：编译黑名单。正则非法属于配置无效（不静默跳过）。
     let blacklist = build_blacklist(raw.security.as_ref())?;
 
-    // 第六步：环境变量来源与 login shell 开关。
+    // 第四步：环境变量来源与 login shell 开关（仅 kind=msys2 使用）。
     // 默认 envFrom=bash + loginShell=false，即"非 login + 注入捕获环境"，
     // 这是把单次命令从 ~705ms 降到 ~63ms 的关键（见 env_cache 模块注释）。
     let env_from = raw
@@ -274,16 +301,88 @@ fn validate(raw: RawConfig, path: &Path) -> Result<BashConfig, String> {
         .unwrap_or(env_cache::EnvFrom::Bash);
     let login_shell = raw.login_shell.unwrap_or(false);
 
-    // 第七步：捕获环境变量（磁盘缓存命中则毫秒级返回，失败降级为空表）。
-    // loginShell=true 时不需要注入环境（profile 会自己建好），省一次捕获。
-    let login_env = if login_shell {
-        env_cache::LoginEnv::empty()
-    } else {
-        env_cache::load_or_capture(&msys2_root, &msystem, &shell, env_from)
+    // 第五步：按后端解析 root / 可执行文件 / 环境。
+    let (root, shell, msystem, login_env) = match kind {
+        ShellKind::Msys2 | ShellKind::GitBash => {
+            // msys2 必须能定位安装根；不存在即无效，不回退。
+            let root_text = raw
+                .msys2_root
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .ok_or_else(|| "root is required for kind=msys2".to_string())?;
+            let root = PathBuf::from(root_text);
+            if !root.is_dir() {
+                return Err(format!("root is not a directory: {root_text}"));
+            }
+
+            // path 相对 root 解析；绝对路径直接使用。
+            let shell_text = raw
+                .shell
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(DEFAULT_MSYS2_SHELL);
+            let shell = if Path::new(shell_text).is_absolute() {
+                PathBuf::from(shell_text)
+            } else {
+                root.join(shell_text)
+            };
+            if !shell.is_file() {
+                return Err(format!("path is not a file: {}", shell.display()));
+            }
+
+            // msystem 空串视为未配置，回落到该后端的默认值。
+            let msystem = raw
+                .msystem
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(kind.default_msystem())
+                .to_string();
+
+            // 捕获环境变量（磁盘缓存命中则毫秒级返回，失败降级为空表）。
+            // loginShell=true 时不需要注入环境（profile 会自己建好），省一次捕获。
+            let login_env = if login_shell {
+                env_cache::LoginEnv::empty()
+            } else {
+                env_cache::load_or_capture(&root, &msystem, &shell, env_from)
+            };
+            (Some(root), shell, msystem, login_env)
+        }
+        ShellKind::PowerShell => {
+            let shell = raw
+                .shell
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(DEFAULT_POWERSHELL);
+            (
+                None,
+                PathBuf::from(shell),
+                String::new(),
+                env_cache::LoginEnv::empty(),
+            )
+        }
+        ShellKind::Cmd => {
+            let shell = raw
+                .shell
+                .as_deref()
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .unwrap_or(DEFAULT_CMD);
+            (
+                None,
+                PathBuf::from(shell),
+                String::new(),
+                env_cache::LoginEnv::empty(),
+            )
+        }
     };
 
     Ok(BashConfig {
-        msys2_root,
+        kind,
+        root,
         msystem,
         shell,
         wait_seconds,
@@ -373,6 +472,7 @@ mod tests {
     fn raw_config(root: &Path, shell: &Path) -> RawConfig {
         RawConfig {
             enabled: None,
+            kind: None,
             msys2_root: Some(root.display().to_string()),
             msystem: None,
             shell: Some(shell.display().to_string()),
@@ -396,13 +496,55 @@ mod tests {
     #[test]
     fn valid_config_takes_defaults_and_compiles_blacklist() {
         let (dir, file) = existing_pair();
-        let config = validate_without_capture(raw_config(&dir, &file), Path::new("cfg.json")).expect("valid");
+        let config = validate_without_capture(raw_config(&dir, &file), Path::new("cfg.json"))
+            .expect("valid");
         assert_eq!(config.msystem, DEFAULT_MSYSTEM);
         assert_eq!(config.wait_seconds, DEFAULT_WAIT_SECONDS);
         assert_eq!(config.default_timeout_seconds, DEFAULT_TIMEOUT_SECONDS);
         assert_eq!(config.max_output_bytes, DEFAULT_MAX_OUTPUT_BYTES);
         assert_eq!(config.max_jobs, DEFAULT_MAX_JOBS);
         assert!(!config.blacklist.is_empty(), "default blacklist is enabled");
+    }
+
+    #[test]
+    fn powershell_and_cmd_do_not_require_root() {
+        let mut raw = raw_config(Path::new("."), Path::new("."));
+        raw.kind = Some("powershell".to_string());
+        raw.msys2_root = None;
+        raw.shell = None;
+        let config = validate_without_capture(raw, Path::new("cfg.json")).expect("powershell");
+        assert_eq!(config.kind, ShellKind::PowerShell);
+        assert_eq!(config.shell, PathBuf::from(DEFAULT_POWERSHELL));
+        assert!(config.root.is_none());
+
+        let mut raw = raw_config(Path::new("."), Path::new("."));
+        raw.kind = Some("cmd".to_string());
+        raw.msys2_root = None;
+        raw.shell = None;
+        let config = validate_without_capture(raw, Path::new("cfg.json")).expect("cmd");
+        assert_eq!(config.kind, ShellKind::Cmd);
+        assert_eq!(config.shell, PathBuf::from(DEFAULT_CMD));
+        assert!(config.root.is_none());
+    }
+
+    #[test]
+    fn git_bash_uses_msys_default_and_bash_path() {
+        let (dir, file) = existing_pair();
+        let mut raw = raw_config(&dir, &file);
+        raw.kind = Some("git-bash".to_string());
+        raw.msystem = None;
+        let config = validate_without_capture(raw, Path::new("cfg.json")).expect("git-bash");
+        assert_eq!(config.kind, ShellKind::GitBash);
+        assert_eq!(config.msystem, "MSYS");
+        assert_eq!(config.shell, file);
+    }
+
+    #[test]
+    fn unknown_kind_is_invalid() {
+        let (dir, file) = existing_pair();
+        let mut raw = raw_config(&dir, &file);
+        raw.kind = Some("zsh".to_string());
+        assert!(validate_without_capture(raw, Path::new("cfg.json")).is_err());
     }
 
     #[test]
@@ -473,7 +615,10 @@ mod tests {
         });
         let config = validate_without_capture(raw, Path::new("cfg.json")).expect("valid");
         assert_eq!(config.blacklist.len(), 1);
-        assert_eq!(check_blacklist(&config.blacklist, "danger").as_deref(), Some("^danger$"));
+        assert_eq!(
+            check_blacklist(&config.blacklist, "danger").as_deref(),
+            Some("^danger$")
+        );
         assert!(check_blacklist(&config.blacklist, "safe").is_none());
     }
 

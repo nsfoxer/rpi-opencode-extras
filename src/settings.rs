@@ -147,13 +147,23 @@ fn load_root() -> Option<Value> {
     }
 }
 
-/// 从 `settings.json` 根对象取出 `msys2Bash` 段。
+/// Shell 配置的当前键名：`opencodeExtras.bash`。
+pub const BASH_KEY: &str = "bash";
+
+/// 从 `settings.json` 根对象取出 shell 配置段。
 ///
-/// 新位置 `opencodeExtras.msys2Bash` 优先，旧顶层位置作为兼容回退。
-pub fn msys2_section(root: &Value) -> Option<&Value> {
-    root.get(EXTRAS_KEY)
-        .and_then(|extras| extras.get(LEGACY_MSYS2_KEY))
+/// 新位置 `opencodeExtras.bash` 优先；随后兼容 `opencodeExtras.msys2Bash`
+/// 和旧顶层 `msys2Bash`，让升级中的用户不必立刻改配置。
+pub fn bash_section(root: &Value) -> Option<&Value> {
+    let extras = root.get(EXTRAS_KEY);
+    extras
+        .and_then(|value| value.get(BASH_KEY))
         .filter(|value| !value.is_null())
+        .or_else(|| {
+            extras
+                .and_then(|value| value.get(LEGACY_MSYS2_KEY))
+                .filter(|value| !value.is_null())
+        })
         .or_else(|| root.get(LEGACY_MSYS2_KEY).filter(|value| !value.is_null()))
 }
 
@@ -227,26 +237,34 @@ mod tests {
     }
 
     #[test]
-    fn msys2_prefers_new_location_and_falls_back_to_legacy() {
+    fn bash_prefers_new_location_and_falls_back_to_legacy() {
         let new = json!({
-            "opencodeExtras": {"msys2Bash": {"msys2Root": "D:\\msys64"}},
+            "opencodeExtras": {
+                "bash": {"root": "E:\\msys64"},
+                "msys2Bash": {"msys2Root": "D:\\msys64"}
+            },
             "msys2Bash": {"msys2Root": "C:\\msys64"}
         });
+        assert_eq!(bash_section(&new).unwrap()["root"], json!("E:\\msys64"));
+
+        let extras_legacy = json!({
+            "opencodeExtras": {"msys2Bash": {"msys2Root": "D:\\msys64"}}
+        });
         assert_eq!(
-            msys2_section(&new).unwrap()["msys2Root"],
+            bash_section(&extras_legacy).unwrap()["msys2Root"],
             json!("D:\\msys64")
         );
 
         let legacy = json!({"msys2Bash": {"msys2Root": "C:\\msys64"}});
         assert_eq!(
-            msys2_section(&legacy).unwrap()["msys2Root"],
+            bash_section(&legacy).unwrap()["msys2Root"],
             json!("C:\\msys64")
         );
 
         let neither = json!({"theme": "dark"});
-        assert!(msys2_section(&neither).is_none());
+        assert!(bash_section(&neither).is_none());
 
-        let explicit_null = json!({"opencodeExtras": {"msys2Bash": null}});
-        assert!(msys2_section(&explicit_null).is_none());
+        let explicit_null = json!({"opencodeExtras": {"bash": null}});
+        assert!(bash_section(&explicit_null).is_none());
     }
 }

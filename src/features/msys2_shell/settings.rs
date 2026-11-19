@@ -64,7 +64,7 @@ pub fn load_section_at(path: &Path) -> Result<Option<(Value, PathBuf)>, String> 
         .map_err(|error| format!("cannot parse {}: {error}", path.display()))?;
 
     // 取插件专属段（新位置优先，旧顶层位置兼容）。缺失或 null 都视为未启用。
-    match crate::settings::msys2_section(&root) {
+    match crate::settings::bash_section(&root) {
         None => Ok(None),
         Some(section) => Ok(Some((section.clone(), path.to_path_buf()))),
     }
@@ -84,7 +84,7 @@ mod tests {
     /// 并行测试里改），因此复用与 `load_section` 相同的解析步骤。
     fn parse(text: &str) -> Result<Option<Value>, String> {
         let root: Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
-        Ok(crate::settings::msys2_section(&root).cloned())
+        Ok(crate::settings::bash_section(&root).cloned())
     }
 
     #[test]
