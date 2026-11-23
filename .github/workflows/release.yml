@@ -1,0 +1,146 @@
+name: release
+
+# tag 规则由宿主解析器决定：`<name>-v<version>`。
+# 例：git tag rpi-opencode-extras-v0.1.0 && git push origin rpi-opencode-extras-v0.1.0
+on:
+  push:
+    tags: ['rpi-opencode-extras-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. rpi-opencode-extras-v0.1.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  PACKAGE: rpi-opencode-extras
+
+jobs:
+  # 发版前重跑一次门禁；红的不发。
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  build:
+    needs: checks
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install Linux native prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          # ureq 的 rustls 后端要 cc 编 ring；zbus 需要 pkg-config 探测。
+          sudo apt-get install -y build-essential pkg-config
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Pack the archive
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=$(cargo metadata --format-version 1 --locked --no-deps | python -c 'import json,sys; print(next(p for p in json.load(sys.stdin)["packages"] if p["name"]=="rpi-opencode-extras")["version"])')
+          case "${{ matrix.target }}" in
+            *windows*) lib=rpi_opencode_extras.dll ;;
+            *apple*)   lib=librpi_opencode_extras.dylib ;;
+            *)         lib=librpi_opencode_extras.so ;;
+          esac
+          src="target/${{ matrix.target }}/release/$lib"
+          test -f "$src"
+          archive="dist/${PACKAGE}-${version}-${{ matrix.target }}.${{ matrix.archive }}"
+          mkdir -p dist
+          if [ "${{ matrix.archive }}" = zip ]; then
+            # 不同 runner 的 zip 命令行为不一致，统一用 python 生成。
+            python -c "import sys,zipfile; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED); z.write(sys.argv[2], sys.argv[3]); z.close()" \
+              "$archive" "$src" "$lib"
+          else
+            tar -czf "$archive" -C "$(dirname "$src")" "$lib"
+          fi
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+
+      - name: Record the platform fragment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/prebuilt_manifest.py fragment \
+            --target "${{ matrix.target }}" \
+            --archive "${{ steps.pack.outputs.archive }}" \
+            --repository "${{ github.repository }}" \
+            --source-commit "${{ github.sha }}" \
+            --output "dist/fragments/${{ matrix.target }}.json"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fragment-${{ matrix.target }}
+          path: dist/fragments/${{ matrix.target }}.json
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-${{ matrix.target }}
+          path: dist/*.${{ matrix.archive }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: fragment-*
+          merge-multiple: true
+          path: dist/fragments
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          merge-multiple: true
+          path: dist
+      - name: Build the distribution manifest
+        run: python tools/prebuilt_manifest.py merge --fragments dist/fragments --output dist/rpi-extension.json
+      - name: Show the manifest
+        run: cat dist/rpi-extension.json
+      - name: Create the release if needed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --target "${{ github.sha }}" --generate-notes --title "$TAG"
+      # 顺序有意义：先传全部归档，清单最后上传。安装器在清单缺失时报
+      # "not ready"，不会读到一半的条目。
+      - name: Upload archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" dist/*.zip dist/*.tar.gz --clobber
+      - name: Upload manifest last
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: gh release upload "$TAG" dist/rpi-extension.json --clobber

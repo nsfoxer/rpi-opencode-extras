@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "name": "rpi-opencode-extras",
+  "version": "0.1.0",
+  "type": "extension",
+  "description": "opencode.ai 请求头注入、MSYS2 bash 后端、DeepSeek 网页检索、Go 套餐用量页脚与桌面通知",
+  "license": "MIT",
+  "targets": [
+    { "target": "x86_64-pc-windows-msvc" },
+    { "target": "x86_64-unknown-linux-gnu" }
+  ],
+  "install": "rpi install rpi-opencode-extras --github nsfoxer/rpi-opencode-extras"
+}

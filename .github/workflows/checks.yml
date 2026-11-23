@@ -1,0 +1,92 @@
+name: rpi-opencode-extras checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  # 供 release.yml 作为前置门禁调用（可复用工作流必须声明 workflow_call）。
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+      RUSTFLAGS: '-D warnings'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --check
+      - name: Test
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked --all-targets --no-deps -- -D warnings
+
+  # 冒烟必须加载 PR 自己的产物，不能用 `rpi install --github`：那装的是
+  # 默认分支或已发布 Release，等于没测这个提交。
+  host-smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build cdylib (PR code)
+        run: cargo build --release --locked
+      - name: Install rpi host (unix)
+        if: runner.os != 'Windows'
+        run: curl -fsSL https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.sh | sh
+      - name: Install rpi host (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 | iex
+      - name: Stage only this build's library
+        shell: bash
+        run: |
+          set -euo pipefail
+          # target/release 里可能有其它历史产物，只暂存本次构建，
+          # 这样“加载 1 个插件”的断言才可靠。
+          mkdir -p smoke
+          found=0
+          for lib in target/release/*.dll target/release/*.so target/release/*.dylib; do
+            [ -e "$lib" ] || continue
+            case "$(basename "$lib")" in
+              *opencode_extras*) cp "$lib" smoke/; found=1 ;;
+            esac
+          done
+          test "$found" = 1
+          ls -l smoke
+      - name: Load the freshly built extension
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=$(RPI_STARTUP_DIAGNOSTICS=1 rpi --offline --local-only \
+                  --extensions-dir smoke \
+                  --verbose --list-models 2>&1)
+          echo "$out"
+          echo "$out" | grep -E 'extensions: loaded 1 plugin\(s\)'

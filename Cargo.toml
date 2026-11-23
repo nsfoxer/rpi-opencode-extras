@@ -2,9 +2,20 @@
 name = "rpi-opencode-extras"
 version = "0.1.0"
 edition = "2021"
+description = "rpi 扩展：opencode.ai 请求头注入、MSYS2 bash 后端、DeepSeek 检索、Go 套餐用量页脚与桌面通知"
+license = "MIT"
+repository = "https://github.com/nsfoxer/rpi-opencode-extras"
 
 [lib]
 crate-type = ["cdylib"]
+
+# 预编译分发只声明真能产出并冒烟过的平台（release CI 按此矩阵构建）。
+# 未声明的平台不会进 rpi-extension.json，也不会出现在扩展目录里。
+[package.metadata.rpi.prebuilt]
+supported-targets = [
+  "x86_64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+]
 
 [dependencies]
 # 必须与宿主 rpi 0.22.1 同版本（插件 ABI 4）；provider feature 才带 provider 桥接

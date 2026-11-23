@@ -326,19 +326,31 @@ GET https://opencode.ai/inference/go/v1/usage    Authorization: Bearer <key>
 
 # 二、如何使用
 
-## 步骤 1：构建
+## 从 Release 安装（推荐）
 
 ```bash
-cd /c/Users/nsfoxer/Desktop/src/foxer/rpi-plugins/opencode
+rpi install rpi-opencode-extras --github nsfoxer/rpi-opencode-extras
+```
+
+还没上架到目录前，这条命令就能用。发布新版本后升级：
+
+```bash
+rpi extension update rpi-opencode-extras
+```
+
+已发布平台：`x86_64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`。
+没有匹配平台时可改用下面的源码构建。
+
+## 从源码构建安装
+
+```bash
 cargo build --release
 ```
 
-产物：`target/release/rpi_opencode_extras.dll`。
-
-## 步骤 2：安装
+产物：`target/release/rpi_opencode_extras.dll`（Linux 为 `librpi_opencode_extras.so`）。
 
 ```bash
-# 先退出正在运行的 rpi，否则 DLL 被占用会复制失败（Device or resource busy）
+# 先退出正在运行的 rpi，否则动态库被占用会复制失败（Device or resource busy）
 cp target/release/rpi_opencode_extras.dll ~/.rpi/agent/extensions/
 ```
 
@@ -352,13 +364,21 @@ cp <项目>/target/release/rpi_opencode_extras.dll .
 rm rpi_opencode_extras.dll.old     # 下次重启后删也可以
 ```
 
-## 步骤 3：确认加载
+## 确认加载
 
 ```bash
 RPI_STARTUP_DIAGNOSTICS=1 rpi --verbose -p "1" 2>&1 | grep 'extensions: loaded'
 ```
 
-看到 `loaded 11 plugin(s) (11 tool(s))` 就说明插件已加载（基线是 `10 plugin(s)`）。
+看工具数变化即可：未启用 `msys2-bash` 时插件贡献 1 个工具（`deepseek_search`），
+启用后为 5 个（`bash` + `get_cmd_result` + `kill_cmd` + `list_cmds` + `deepseek_search`）。
+
+## 卸载
+
+```bash
+rpi uninstall rpi-opencode-extras    # 从 Release 安装的
+rm ~/.rpi/agent/extensions/rpi_opencode_extras.dll    # 手动放置的
+```
 
 ## 使用 provider 功能（无需任何操作）
 

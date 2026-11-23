@@ -3,3 +3,9 @@ target/
 
 # rpi 运行时在本目录产生的会话状态（构建产物之外的本机状态）
 .rpi/
+
+# 本地打包/冒烟临时产物
+dist/
+dist-test/
+smoke/
+__pycache__/
