@@ -37,7 +37,10 @@ pub fn run(raw: &str) -> Result<String, String> {
                 .map(|job| job.status())
                 .unwrap_or(JobStatus::Completed);
             Ok(ok_result(
-                &format!("job {id} already finished ({}), nothing to kill", status.as_str()),
+                &format!(
+                    "job {id} already finished ({}), nothing to kill",
+                    status.as_str()
+                ),
                 json!({ "id": id, "status": status.as_str(), "noop": true }),
             ))
         }

@@ -93,7 +93,10 @@ mod tests {
 
     #[test]
     fn command_is_flattened_to_one_line() {
-        assert_eq!(flatten_command("echo a\n echo b\t echo c"), "echo a echo b echo c");
+        assert_eq!(
+            flatten_command("echo a\n echo b\t echo c"),
+            "echo a echo b echo c"
+        );
     }
 
     #[test]

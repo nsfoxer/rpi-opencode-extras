@@ -264,7 +264,9 @@ extern "C" fn poll(
         result
     })
     .unwrap_or_else(|_| {
-        StepResult::err(StbString::from_string(error_result("msys2-bash poll panicked")))
+        StepResult::err(StbString::from_string(error_result(
+            "msys2-bash poll panicked",
+        )))
     })
 }
 

@@ -6,9 +6,7 @@
 
 use crate::headers::{build_headers, is_opencode_ai_url};
 use async_trait::async_trait;
-use rpi_ai::{
-    AssistantMessageEventStream, Context, Model, Provider, SimpleStreamOptions,
-};
+use rpi_ai::{AssistantMessageEventStream, Context, Model, Provider, SimpleStreamOptions};
 use std::sync::Arc;
 
 /// 包装层：注入 header 后转发给内层 provider。
@@ -78,16 +76,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::future::Future;
     use std::sync::{Arc, Mutex};
-    use std::task::{Context as TaskContext, Poll, Wake, Waker};
+    use std::task::{Context as TaskContext, Poll, Waker};
 
     /// 单次 poll 的极简 executor：被测 future 不会挂起，所以不需要真正的运行时。
     fn block_on<F: Future>(future: F) -> Option<F::Output> {
-        struct NoopWake;
-        impl Wake for NoopWake {
-            fn wake(self: Arc<Self>) {}
-        }
-        let waker = Waker::from(Arc::new(NoopWake));
-        let mut task = TaskContext::from_waker(&waker);
+        let mut task = TaskContext::from_waker(Waker::noop());
         let mut future = Box::pin(future);
         match future.as_mut().poll(&mut task) {
             Poll::Ready(value) => Some(value),

@@ -313,7 +313,7 @@ impl JobManager {
         let spawned = std::thread::Builder::new()
             .name(format!("msys2-bash-{id}"))
             .spawn(move || {
-                run_job(
+                run_job(JobSpec {
                     state,
                     kind,
                     shell,
@@ -323,7 +323,7 @@ impl JobManager {
                     command,
                     cwd,
                     timeout,
-                )
+                })
             });
 
         if let Err(error) = spawned {
@@ -376,28 +376,44 @@ fn kill_process_tree(pid: u32) {
         .status();
 }
 
+/// job 线程主体需要的一切（打包传入，避免 9 个位置参数）。
+struct JobSpec {
+    /// 共享状态（本线程是唯一写入者）。
+    state: Arc<Mutex<JobState>>,
+    /// shell 后端类型。
+    kind: ShellKind,
+    /// shell 可执行文件路径。
+    shell: PathBuf,
+    /// `MSYSTEM` 值。
+    msystem: String,
+    /// `true` 用 `-lc`（source /etc/profile）；`false` 用 `-c` + 注入环境。
+    login_shell: bool,
+    /// 启动期捕获的环境变量（`login_shell=true` 时为空）。
+    login_env: std::collections::HashMap<String, String>,
+    /// 命令文本。
+    command: String,
+    /// 工作目录。
+    cwd: PathBuf,
+    /// 本次 job 的总截止时间。
+    timeout: Duration,
+}
+
 /// job 线程主体：spawn 子进程 → 读合并输出 → 到点杀树 → 写终态。
-///
-/// 参数：
-/// - `state`：共享状态（本线程是唯一写入者）。
-/// - `shell`/`msystem`：shell 路径与 MSYSTEM 值。
-/// - `login_shell`：`true` 用 `-lc`（source /etc/profile）；`false` 用 `-c` + 注入环境。
-/// - `login_env`：启动期捕获的环境变量（`login_shell=true` 时为空）。
-/// - `command`/`cwd`/`timeout`：执行参数。
 ///
 /// 注意：本线程**不**看“停止等待”标志——那个标志只影响工具层还要不要继续等，
 /// 进程必须一直跑到自然结束或被 `kill_cmd`/超时杀掉。
-fn run_job(
-    state: Arc<Mutex<JobState>>,
-    kind: ShellKind,
-    shell: PathBuf,
-    msystem: String,
-    login_shell: bool,
-    login_env: std::collections::HashMap<String, String>,
-    command: String,
-    cwd: PathBuf,
-    timeout: Duration,
-) {
+fn run_job(spec: JobSpec) {
+    let JobSpec {
+        state,
+        kind,
+        shell,
+        msystem,
+        login_shell,
+        login_env,
+        command,
+        cwd,
+        timeout,
+    } = spec;
     // 第一步：按后端构造子进程。stdout/stderr 都走 piped，稍后由两个线程读取。
     //
     // MSYS2 的关键性能选择：默认用 `-c`（非 login）而不是 `-lc`。MSYS2 的 login

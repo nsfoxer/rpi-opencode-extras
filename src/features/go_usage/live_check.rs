@@ -28,14 +28,21 @@ fn live_usage_fetch_renders_a_footer_line() {
     use crate::features::go_usage::fetch::fetch_usage;
 
     // 第一步：解析凭据。
-    let (api_key, base_url) = resolve_api_key().expect("models.json must hold an opencode.ai apiKey");
+    let (api_key, base_url) =
+        resolve_api_key().expect("models.json must hold an opencode.ai apiKey");
 
     // 第二步：真实请求。
     let snapshot = fetch_usage(&api_key).expect("usage endpoint must answer 200");
 
     // 第三步：至少要有月度窗口（端点契约）。
-    let monthly = snapshot.monthly.as_ref().expect("monthly window must be present");
-    assert!(monthly.percent <= 100, "percent must be clamped: {monthly:?}");
+    let monthly = snapshot
+        .monthly
+        .as_ref()
+        .expect("monthly window must be present");
+    assert!(
+        monthly.percent <= 100,
+        "percent must be clamped: {monthly:?}"
+    );
 
     // 第四步：渲染并检查形状。
     let now = parse_rfc3339_unix("2026-11-13T07:24:00Z").expect("fixture timestamp");
@@ -44,10 +51,19 @@ fn live_usage_fetch_renders_a_footer_line() {
     println!("snapshot = {snapshot:?}");
     println!("footer   = {text}");
 
-    assert!(text.starts_with("Go "), "footer must start with `Go `: {text}");
+    assert!(
+        text.starts_with("Go "),
+        "footer must start with `Go `: {text}"
+    );
     assert!(text.contains('%'), "footer must contain a percent: {text}");
 
     // 第五步：凭据绝不能出现在展示文本里。
-    assert!(!text.contains(&api_key), "api key must never leak into the footer");
-    assert!(!text.contains("oc_sk_"), "api key prefix must never leak into the footer");
+    assert!(
+        !text.contains(&api_key),
+        "api key must never leak into the footer"
+    );
+    assert!(
+        !text.contains("oc_sk_"),
+        "api key prefix must never leak into the footer"
+    );
 }

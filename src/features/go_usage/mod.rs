@@ -73,7 +73,11 @@ pub fn register(api: &PluginApi) -> i32 {
     };
 
     // 第 1.5 步：先订阅 TUI 门控。没它就不启用（`-p` / headless 无页脚可画）。
-    let gate_rc = register_event(TUI_GATE_TAG, on_tui_start as EventHandlerFn, std::ptr::null_mut());
+    let gate_rc = register_event(
+        TUI_GATE_TAG,
+        on_tui_start as EventHandlerFn,
+        std::ptr::null_mut(),
+    );
     if gate_rc != 0 {
         eprintln!("rpi-opencode-extras: go-usage disabled: cannot subscribe {TUI_GATE_TAG:?} (rc={gate_rc})");
         return 0;
@@ -91,11 +95,7 @@ pub fn register(api: &PluginApi) -> i32 {
     // 第三步：注册关闭钩子。必须有：工作线程在进程退出时仍可能调宿主，
     // 实测会输出 `runtime action invoked after harness was dropped`。
     if let Some(register_lifecycle) = api.register_plugin_lifecycle {
-        let rc = register_lifecycle(
-            on_begin_shutdown,
-            on_finish_shutdown,
-            std::ptr::null_mut(),
-        );
+        let rc = register_lifecycle(on_begin_shutdown, on_finish_shutdown, std::ptr::null_mut());
         if rc != 0 {
             eprintln!("rpi-opencode-extras: go-usage lifecycle hook rejected (rc={rc})");
         }
@@ -108,7 +108,10 @@ pub fn register(api: &PluginApi) -> i32 {
 ///
 /// 这是本功能**唯一**的启用入口：没有它（`-p` / headless）就不启用，
 /// 既不会在无页脚的场景里白花请求，也不会在退出期打到已销毁的 harness。
-extern "C" fn on_tui_start(_event: rpi_plugin_sdk::StablePluginEvent, _user_data: *mut c_void) -> i32 {
+extern "C" fn on_tui_start(
+    _event: rpi_plugin_sdk::StablePluginEvent,
+    _user_data: *mut c_void,
+) -> i32 {
     worker::enable_for_tui();
     // 首次立即刷新（忽略节流）。
     worker::request_refresh(true);

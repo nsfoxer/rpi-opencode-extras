@@ -28,7 +28,11 @@ pub fn fetch_usage(api_key: &str) -> Result<UsageSnapshot, String> {
 
     let mut last_error = String::from("opencode usage failed: no endpoint attempted");
     for endpoint in USAGE_ENDPOINTS {
-        match agent.get(endpoint).set("Authorization", &authorization).call() {
+        match agent
+            .get(endpoint)
+            .set("Authorization", &authorization)
+            .call()
+        {
             Ok(response) => {
                 // 200：解析正文；解析失败视为该端点异常，继续下一个。
                 let body = read_body_capped(response)?;

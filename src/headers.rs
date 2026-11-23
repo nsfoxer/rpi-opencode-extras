@@ -55,10 +55,7 @@ pub fn build_headers(
     }
 
     // 第二步：归一化 session 值（空则兜底、缺失前缀则补前缀）。
-    headers.insert(
-        SESSION_HEADER.to_string(),
-        normalize_session_id(session_id),
-    );
+    headers.insert(SESSION_HEADER.to_string(), normalize_session_id(session_id));
 
     // 第三步：覆盖 User-Agent，声明请求来自本插件。
     headers.insert("user-agent".to_string(), USER_AGENT.to_string());

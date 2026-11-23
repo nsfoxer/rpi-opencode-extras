@@ -47,7 +47,10 @@ pub fn register(api: &PluginApi) -> i32 {
     let specs = match crate::config::discover_opencode_providers() {
         Ok(specs) => specs,
         Err(error) => {
-            eprintln!("rpi-opencode-extras: {}, no provider wrapped", error.describe());
+            eprintln!(
+                "rpi-opencode-extras: {}, no provider wrapped",
+                error.describe()
+            );
             return 0;
         }
     };

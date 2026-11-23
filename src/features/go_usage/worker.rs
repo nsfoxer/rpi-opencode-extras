@@ -313,8 +313,7 @@ pub fn request_refresh(force: bool) {
             let _guard = WorkerGuard;
 
             // 关闭后或门控关掉后不再碰宿主。
-            if super::worker::SHUTTING_DOWN.load(Ordering::Acquire)
-                || !super::worker::is_enabled()
+            if super::worker::SHUTTING_DOWN.load(Ordering::Acquire) || !super::worker::is_enabled()
             {
                 return;
             }

@@ -274,7 +274,7 @@ mod tests {
 
     #[test]
     fn dedupe_window_is_short_but_nonzero() {
-        assert!(WAIT_DEDUPE_MS > 0);
-        assert!(WAIT_DEDUPE_MS <= 10_000);
+        const { assert!(WAIT_DEDUPE_MS > 0) };
+        const { assert!(WAIT_DEDUPE_MS <= 10_000) };
     }
 }

@@ -142,13 +142,7 @@ pub fn parse_env_output(output: &str) -> HashMap<String, String> {
 /// 参数：`msys2_root` 安装根；`msystem` MSYSTEM 值；`shell` shell 路径；`env_from` 环境来源。
 /// 返回：用于判断缓存是否仍然适用的字符串。任一字段变化都会使旧缓存失效。
 pub fn fingerprint(msys2_root: &str, msystem: &str, shell: &str, env_from: EnvFrom) -> String {
-    format!(
-        "{}|{}|{}|{}",
-        msys2_root,
-        msystem,
-        shell,
-        env_from.as_str()
-    )
+    format!("{}|{}|{}|{}", msys2_root, msystem, shell, env_from.as_str())
 }
 
 /// 磁盘缓存条目。
@@ -246,10 +240,10 @@ fn write_atomic(dir: &Path, file_name: &str, content: &str) {
     }
     let final_path = dir.join(file_name);
     let tmp_path = dir.join(format!("{file_name}.tmp"));
-    if std::fs::write(&tmp_path, content).is_ok() {
-        if std::fs::rename(&tmp_path, &final_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
-        }
+    if std::fs::write(&tmp_path, content).is_ok()
+        && std::fs::rename(&tmp_path, &final_path).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp_path);
     }
 }
 
@@ -319,7 +313,10 @@ pub fn capture(msys2_root: &Path, msystem: &str, env_from: EnvFrom) -> Result<Lo
     let stdout = String::from_utf8_lossy(&output.stdout);
     let vars = parse_env_output(&stdout);
     if vars.is_empty() {
-        return Err(format!("`{} -c env` produced no variables", env_from.as_str()));
+        return Err(format!(
+            "`{} -c env` produced no variables",
+            env_from.as_str()
+        ));
     }
     Ok(LoginEnv::from_vars(vars))
 }
@@ -343,7 +340,12 @@ pub fn load_or_capture(
     if env_from == EnvFrom::None {
         return LoginEnv::empty();
     }
-    let fp = fingerprint(&msys2_root.display().to_string(), msystem, &shell.display().to_string(), env_from);
+    let fp = fingerprint(
+        &msys2_root.display().to_string(),
+        msystem,
+        &shell.display().to_string(),
+        env_from,
+    );
 
     // 第二步：磁盘缓存命中 → 毫秒级返回。
     if let Some(vars) = load(&fp) {
@@ -454,7 +456,10 @@ mod tests {
         save_in(&dir, &fp, &vars);
 
         let loaded = load_in(&dir, &fp).expect("cache hit");
-        assert_eq!(loaded.get("PUB_CACHE").map(String::as_str), Some("C:\\PubCache"));
+        assert_eq!(
+            loaded.get("PUB_CACHE").map(String::as_str),
+            Some("C:\\PubCache")
+        );
     }
 
     #[test]
@@ -489,7 +494,10 @@ mod tests {
     fn write_atomic_leaves_no_tmp_file() {
         let dir = temp_dir("atomic");
         write_atomic(&dir, "t.json", "hello");
-        assert_eq!(std::fs::read_to_string(dir.join("t.json")).unwrap(), "hello");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("t.json")).unwrap(),
+            "hello"
+        );
         assert!(!dir.join("t.json.tmp").exists());
     }
 
@@ -507,15 +515,23 @@ mod tests {
     #[test]
     fn capture_returns_empty_for_none_source() {
         // none 不应触碰文件系统，直接返回空表。
-        let env = capture(Path::new("C:\\definitely-not-here-9f3a"), "MINGW64", EnvFrom::None)
-            .expect("none never fails");
+        let env = capture(
+            Path::new("C:\\definitely-not-here-9f3a"),
+            "MINGW64",
+            EnvFrom::None,
+        )
+        .expect("none never fails");
         assert!(env.is_empty());
     }
 
     #[test]
     fn capture_reports_missing_shell() {
-        let err = capture(Path::new("C:\\definitely-not-here-9f3a"), "MINGW64", EnvFrom::Fish)
-            .expect_err("missing shell must fail");
+        let err = capture(
+            Path::new("C:\\definitely-not-here-9f3a"),
+            "MINGW64",
+            EnvFrom::Fish,
+        )
+        .expect_err("missing shell must fail");
         assert!(err.contains("not found"), "unexpected message: {err}");
     }
 }

@@ -158,17 +158,21 @@ mod tests {
         assert!(parse_usage("").is_err());
         assert!(parse_usage("<html>hi</html>").is_err());
         // 401 响应体没有 usage 对象，必须报错而不是当成全空快照。
-        let auth_error = r#"{"type":"error","error":{"type":"AuthError","message":"Unauthorized"}}"#;
+        let auth_error =
+            r#"{"type":"error","error":{"type":"AuthError","message":"Unauthorized"}}"#;
         assert!(parse_usage(auth_error).is_err());
         assert!(parse_usage(r#"{"usage":[]}"#).is_err());
     }
 
     #[test]
     fn default_snapshot_has_no_windows() {
-        assert_eq!(UsageSnapshot::default(), UsageSnapshot {
-            rolling: None,
-            weekly: None,
-            monthly: None,
-        });
+        assert_eq!(
+            UsageSnapshot::default(),
+            UsageSnapshot {
+                rolling: None,
+                weekly: None,
+                monthly: None,
+            }
+        );
     }
 }

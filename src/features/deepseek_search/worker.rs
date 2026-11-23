@@ -5,7 +5,7 @@
 use crate::features::deepseek_search::params::{parse_params, SearchParams};
 use crate::features::deepseek_search::search::search_web;
 use rpi_plugin_sdk::handles::ToolHandles;
-use rpi_plugin_sdk::{StepHandle, StepResult, StbString, ToolPartialCb};
+use rpi_plugin_sdk::{StbString, StepHandle, StepResult, ToolPartialCb};
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -247,8 +247,9 @@ mod tests {
     fn poll_settled(handle: StepHandle) -> Step {
         for _ in 0..2000 {
             // SAFETY: poll 返回的 StepResult 由本 SDK 分配，所有权转移恰好一次。
-            let step =
-                unsafe { rpi_plugin_sdk::take_step_result!(poll(handle, None, std::ptr::null_mut())) };
+            let step = unsafe {
+                rpi_plugin_sdk::take_step_result!(poll(handle, None, std::ptr::null_mut()))
+            };
             if !matches!(step, Step::Pending(_)) {
                 return step;
             }

@@ -11,6 +11,10 @@
 //! - [`headers`]：纯函数的 header 构造与域名判定（共享核心）。
 //! - [`error`]：统一错误类型（共享核心）。
 
+// `export_plugin!` 生成的 `extern "C"` 入口按 ABI 契约接收裸指针，SAFETY 由 SDK
+// 的 `register_entrypoint` 负责；clippy 无法看到宏展开里的空指针检查。
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 mod config;
 mod error;
 mod features;
@@ -18,4 +22,4 @@ mod headers;
 mod registry;
 mod settings;
 
-rpi_plugin_sdk::export_plugin!(|api| registry::register_all(api));
+rpi_plugin_sdk::export_plugin!(registry::register_all);

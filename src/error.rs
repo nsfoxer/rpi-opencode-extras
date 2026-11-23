@@ -56,10 +56,7 @@ mod tests {
 
     #[test]
     fn describe_prefixes_the_error_kind() {
-        assert_eq!(
-            GoError::Config("boom".into()).describe(),
-            "config: boom"
-        );
+        assert_eq!(GoError::Config("boom".into()).describe(), "config: boom");
         assert_eq!(GoError::Http("502".into()).describe(), "http: 502");
         assert_eq!(
             GoError::Unsupported("no slot".into()).describe(),

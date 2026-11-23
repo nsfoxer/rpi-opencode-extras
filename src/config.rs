@@ -54,12 +54,10 @@ pub fn models_json_path() -> Result<PathBuf, GoError> {
 /// 错误：文件不存在、读取失败或不是合法 JSON 时为 [`GoError::Config`]。
 pub fn load_models_json() -> Result<serde_json::Value, GoError> {
     let path = models_json_path()?;
-    let text = std::fs::read_to_string(&path).map_err(|error| {
-        GoError::Config(format!("cannot read {}: {error}", path.display()))
-    })?;
-    serde_json::from_str(&text).map_err(|error| {
-        GoError::Config(format!("cannot parse {}: {error}", path.display()))
-    })
+    let text = std::fs::read_to_string(&path)
+        .map_err(|error| GoError::Config(format!("cannot read {}: {error}", path.display())))?;
+    serde_json::from_str(&text)
+        .map_err(|error| GoError::Config(format!("cannot parse {}: {error}", path.display())))
 }
 
 /// 从 `models.json` 的 JSON 树里筛出所有指向 opencode.ai 的 provider。

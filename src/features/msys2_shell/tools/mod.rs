@@ -72,8 +72,7 @@ pub const KILL_CMD_DESCRIPTION: &str =
     "Kill a running command (whole process tree). No-op if the command already finished.";
 
 /// `list_cmds` 的工具描述。
-pub const LIST_CMDS_DESCRIPTION: &str =
-    "List running commands and the most recent finished ones.";
+pub const LIST_CMDS_DESCRIPTION: &str = "List running commands and the most recent finished ones.";
 
 /// `bash` 的参数 schema。
 pub const BASH_PARAMETERS: &str = r#"{
@@ -191,8 +190,7 @@ mod tests {
 
     #[test]
     fn bash_schema_requires_command_and_documents_ranges() {
-        let value: serde_json::Value =
-            serde_json::from_str(BASH_PARAMETERS).expect("valid json");
+        let value: serde_json::Value = serde_json::from_str(BASH_PARAMETERS).expect("valid json");
         assert_eq!(value["required"][0], "command");
         assert_eq!(value["properties"]["waitSeconds"]["type"], "integer");
         assert_eq!(value["properties"]["timeout"]["type"], "number");

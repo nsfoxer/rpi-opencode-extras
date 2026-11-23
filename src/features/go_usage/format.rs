@@ -322,9 +322,16 @@ mod tests {
             "must not regress to U+21BB (renders overlapped), got: {marker}"
         );
         // 字符与倒计时之间必须有空格，双重保险防重叠。
-        assert_eq!(&marker[..('⟳'.len_utf8() + 1)], "⟳ ", "glyph must be followed by a space");
+        assert_eq!(
+            &marker[..('⟳'.len_utf8() + 1)],
+            "⟳ ",
+            "glyph must be followed by a space"
+        );
         // 倒计时本体必须是纯 ASCII，字体覆盖无风险。
-        assert!(marker[('⟳'.len_utf8() + 1)..].is_ascii(), "countdown body must be ASCII: {marker}");
+        assert!(
+            marker[('⟳'.len_utf8() + 1)..].is_ascii(),
+            "countdown body must be ASCII: {marker}"
+        );
     }
 
     #[test]

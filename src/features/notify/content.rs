@@ -61,13 +61,13 @@ pub fn question_from_params(params: &str) -> Option<String> {
             .and_then(|v| v.as_str()),
         value.get("summary").and_then(|v| v.as_str()),
     ];
-    let found = candidates
+    // 先收集到自有 `String`，避免末尾表达式借用 `value` 导致临时值提前释放。
+    let text = candidates
         .into_iter()
         .flatten()
         .map(collapse_whitespace)
-        .find(|text| !text.is_empty())
-        .map(|text| truncate(&text, MAX_BODY_CHARS));
-    found
+        .find(|text| !text.is_empty());
+    text.map(|text| truncate(&text, MAX_BODY_CHARS))
 }
 
 /// 把毫秒格式化成通知里短小的耗时文本。

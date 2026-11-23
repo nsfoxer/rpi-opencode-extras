@@ -51,7 +51,10 @@ mod tests {
     fn feature_names_are_unique_and_non_empty() {
         let mut names: Vec<&str> = Vec::new();
         for feature in FEATURES {
-            assert!(!feature.name.trim().is_empty(), "feature name must not be blank");
+            assert!(
+                !feature.name.trim().is_empty(),
+                "feature name must not be blank"
+            );
             assert!(
                 !names.contains(&feature.name),
                 "duplicate feature name: {}",
