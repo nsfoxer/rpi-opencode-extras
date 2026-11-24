@@ -84,10 +84,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $Url = 'https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1'
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
-              irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 \
-                -OutFile install.ps1
+              Invoke-RestMethod -Uri $Url -OutFile install.ps1
+              # 下载的文件带 Mark-of-the-Web，会被 RemoteSigned 策略拦；先去掉该标记。
+              Unblock-File -LiteralPath ./install.ps1
               ./install.ps1 -Version $env:RPI_HOST_VERSION
               break
             }
