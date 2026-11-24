@@ -24,7 +24,7 @@ env:
 jobs:
   # 发版前重跑一次门禁；红的不发。
   checks:
-    uses: ./.github/workflows/checks.yml
+    uses: ./.github/workflows/rpi-opencode-extras-checks.yml
 
   build:
     needs: checks
@@ -38,8 +38,23 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            archive: tar.gz
+          # 宿主 release-binaries 的 macOS 矩阵用的就是这两个 runner；
+          # 在 arm64 上交叉编 x86_64 依赖完整 SDK，不如直接用 intel runner 可靠。
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: tar.gz
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
+    env:
+      # musl-tools 装的是 musl-gcc，而 cc-rs 默认找 x86_64-linux-musl-gcc。
+      CC_x86_64_unknown_linux_musl: musl-gcc
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -54,7 +69,8 @@ jobs:
           set -euo pipefail
           sudo apt-get update
           # ureq 的 rustls 后端要 cc 编 ring；zbus 需要 pkg-config 探测。
-          sudo apt-get install -y build-essential pkg-config
+          # musl 目标额外需要 musl-gcc 才能链出静态库。
+          sudo apt-get install -y build-essential pkg-config musl-tools
       - name: Build
         run: cargo build --release --locked --target ${{ matrix.target }}
 

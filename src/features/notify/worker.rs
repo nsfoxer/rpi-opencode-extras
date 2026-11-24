@@ -1,12 +1,22 @@
-//! `notify` 的工作线程：能力探测、D-Bus 通知、关闭/替换。
+//! `notify` 的工作线程：通知发送、关闭/替换。
 //!
 //! **硬约束**：事件回调里不能做 D-Bus 调用（会阻塞宿主事件分发），
 //! 因此回调只 `send` 一条命令，真正的 `Notify` 都在这里执行。
 //!
-//! 能力探测只做一次：`org.freedesktop.Notifications` 不可达（纯 SSH / headless）
-//! 就整个 worker 静默禁用，不打印、不回退、不影响其他 feature。
+//! **不需要事前探测**：通知是尽力而为的能力，`show()` 自己就返回 `Result`。
+//! 第一次失败就整体禁用并保持静默（宿主没有给插件提供日志通道，用户也不该被
+//! 一行无用的提示打扰）；纯 SSH / headless 环境下因此完全无声。
+//!
+//! **平台差异**（`notify-rust` 4.x 默认后端）：
+//! - Linux/BSD：`show()` 真连 D-Bus，失败返回 `Err`；handle 支持 `close()` 撤回。
+//! - Windows：winrt 后端，失败返回 `Err`；handle 无 `close()`。
+//! - macOS：`NSUserNotificationCenter` 后端，`show()` 恒返回 `Ok`，真正发送在
+//!   handle 的 `Drop` 里，且没有 `close()`，也不支持 `urgency`。
+//!   因此该平台不留 handle（丢弃即发送、不可撤回）。
 
-use notify_rust::{Notification, NotificationHandle, Timeout, Urgency};
+#[cfg(not(target_os = "macos"))]
+use notify_rust::Urgency;
+use notify_rust::{Notification, NotificationHandle, Timeout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Mutex;
@@ -79,13 +89,7 @@ pub fn still_running() -> bool {
 }
 
 fn run(receiver: Receiver<Command>) {
-    // 能力探测。失败即禁用：不打印、不回退（纯 SSH 远端要完全安静）。
-    // Unix probes the D-Bus server before doing any work; the Windows backend
-    // is winrt-based and has no equivalent probe, so assume it works and turn
-    // notifications off after the first failed `show`.
-    #[cfg(unix)]
-    let mut enabled = notify_rust::get_server_information().is_ok();
-    #[cfg(not(unix))]
+    // 不做事前探测：`show()` 的 `Result` 已经足够驱动「失败即禁用」。
     let mut enabled = true;
     let mut waiting: Option<NotificationHandle> = None;
     let mut done: Option<NotificationHandle> = None;
@@ -103,13 +107,8 @@ fn run(receiver: Receiver<Command>) {
                     continue;
                 }
                 close(&mut waiting);
-                match show(
-                    "rpi · 等待你回答",
-                    &body,
-                    Urgency::Normal,
-                    "dialog-question",
-                ) {
-                    Ok(handle) => waiting = Some(handle),
+                match show("rpi · 等待你回答", &body, Level::Normal, "dialog-question") {
+                    Ok(handle) => keep(&mut waiting, handle),
                     Err(_) => enabled = false,
                 }
             }
@@ -123,13 +122,13 @@ fn run(receiver: Receiver<Command>) {
                 } else {
                     "rpi · 已完成"
                 };
-                let (urgency, icon) = if error {
-                    (Urgency::Normal, "dialog-error")
+                let (level, icon) = if error {
+                    (Level::Normal, "dialog-error")
                 } else {
-                    (Urgency::Low, "utilities-terminal")
+                    (Level::Low, "utilities-terminal")
                 };
-                match show(summary, &body, urgency, icon) {
-                    Ok(handle) => done = Some(handle),
+                match show(summary, &body, level, icon) {
+                    Ok(handle) => keep(&mut done, handle),
                     Err(_) => enabled = false,
                 }
             }
@@ -141,28 +140,63 @@ fn run(receiver: Receiver<Command>) {
     FINISHED.store(true, Ordering::SeqCst);
 }
 
+/// 通知优先级。
+///
+/// macOS 默认后端不支持 `urgency`，且 `notify_rust::Urgency` 在该平台被标记为
+/// deprecated（`-D warnings` 会直接失败），因此用自有枚举表达意图，
+/// 只在支持它的平台映射过去。
+#[derive(Clone, Copy)]
+enum Level {
+    Normal,
+    Low,
+}
+
 fn show(
     summary: &str,
     body: &str,
-    urgency: Urgency,
+    level: Level,
     icon: &str,
 ) -> Result<NotificationHandle, notify_rust::error::Error> {
-    Notification::new()
+    let mut notification = Notification::new();
+    notification
         .appname("rpi")
         .summary(summary)
         .body(body)
         .icon(icon)
-        .urgency(urgency)
-        .timeout(Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS))
-        .show()
+        .timeout(Timeout::Milliseconds(NOTIFICATION_TIMEOUT_MS));
+
+    #[cfg(not(target_os = "macos"))]
+    notification.urgency(match level {
+        Level::Normal => Urgency::Normal,
+        Level::Low => Urgency::Low,
+    });
+    // macOS 默认后端不支持 urgency，`level` 只用于这里的选择。
+    #[cfg(target_os = "macos")]
+    let _ = level;
+
+    notification.show()
+}
+
+/// 保存 handle，供后续替换或撤回。
+#[cfg(not(target_os = "macos"))]
+fn keep(slot: &mut Option<NotificationHandle>, handle: NotificationHandle) {
+    *slot = Some(handle);
+}
+
+/// macOS 默认后端把「发送」放在 handle 的 `Drop` 里，且没有 `close()`：
+/// 立刻丢弃即「立即发送、不可撤回」，与决策的降级语义一致。
+#[cfg(target_os = "macos")]
+fn keep(_slot: &mut Option<NotificationHandle>, handle: NotificationHandle) {
+    drop(handle);
 }
 
 fn close(handle: &mut Option<NotificationHandle>) {
-    #[cfg(unix)]
+    // 只有 XDG（Linux/BSD）后端能用 `close()` 撤回通知。
+    #[cfg(all(unix, not(target_os = "macos")))]
     if let Some(handle) = handle.take() {
         handle.close();
     }
-    // The winrt backend has no `close`; dropping the handle is enough.
-    #[cfg(not(unix))]
+    // Windows winrt 与 macOS 默认后端都没有 `close`；丢弃 handle 即可。
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
     let _ = handle.take();
 }

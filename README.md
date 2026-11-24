@@ -11,8 +11,10 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 | **`notify`** | agent 跑完或等待用户回答时发桌面通知 | `notify` | **开** |
 
 - 宿主：rpi `0.22.1+`（插件 ABI `4`；已在 rpi `0.24.0` Linux x86_64 上验证）
-- 产物：**单个** `librpi_opencode_extras.so` / `rpi_opencode_extras.dll`，单个 `export_plugin!` 入口
-- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）、`notify-rust`（D-Bus）
+- 产物：**单个** `librpi_opencode_extras.so` / `rpi_opencode_extras.dll` / `librpi_opencode_extras.dylib`，
+  单个 `export_plugin!` 入口
+- 平台：Windows x64、Linux x64（glibc / musl）、macOS（Intel / Apple Silicon）
+- 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）、`notify-rust`（桌面通知）
 - 不引入 `tokio` / `reqwest`（异步运行时与 provider HTTP 客户端都由宿主提供；
   `ureq` 仅供 `deepseek-search` 的同步网络调用，`notify-rust` 只在通知线程里使用）
 
@@ -309,17 +311,24 @@ GET https://opencode.ai/inference/go/v1/usage    Authorization: Bearer <key>
 | 对话框关闭 / run 开始 | 自动关闭上一条等待通知 |
 | 用户主动中止（`aborted`） | 不提示 |
 
-### 支持性探测
+### 失败时怎么处理
 
-启动时探测一次 `org.freedesktop.Notifications`（D-Bus）。**探测失败就整个功能静默禁用**：
+**不做事前探测**。通知是尽力而为的能力，直接发，失败就整体禁用：
 
 - 本机 TUI、从桌面终端启动的 `rpi --server` → 正常通知
-- systemd/无桌面启动的服务端、纯 SSH 远端 → 不发通知，不打印错误，也不回退到 BEL/OSC
+- systemd/无桌面启动的服务端、纯 SSH 远端 → 不发通知，**不打印任何错误**，也不回退到 BEL/OSC
+- 第一次失败后本进程内不再尝试
+
+之所以不输出提示，是因为宿主没有给插件提供日志通道（`PluginDiagnostics` 在生产路径
+是 `NullDiagnostics`，`log` crate 也没有安装 logger），插件只能直接写 stderr；
+而一个可选能力的失败不应占用用户终端。
 
 ### 实现约束
 
 - 事件回调只做内存读写 + 入队，`Notify` 调用全部在 `rpi-notify` 工作线程执行，不阻塞宿主事件分发
-- 同一类通知用 `NotificationHandle::close()` 替换，不会堆叠
+- Linux/BSD 用 `NotificationHandle::close()` 替换同类通知，不会堆叠；
+  Windows 与 macOS 后端没有 `close()`，只能靠后端自身行为
+- macOS 的 handle 一丢弃就发送且不可撤回，因此该平台不保留 handle（详见「六、已知限制」）
 - 插件关闭时通过 lifecycle 钩子等待工作线程退出，避免 DLL 卸载后仍在执行
 
 ---
@@ -338,8 +347,17 @@ rpi install rpi-opencode-extras --github nsfoxer/rpi-opencode-extras
 rpi extension update rpi-opencode-extras
 ```
 
-已发布平台：`x86_64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`。
-没有匹配平台时可改用下面的源码构建。
+已发布平台（预编译）：
+
+| target | 说明 |
+| --- | --- |
+| `x86_64-pc-windows-msvc` | Windows x64 |
+| `x86_64-unknown-linux-gnu` | Linux x64，glibc（Ubuntu/Debian/Fedora 等默认） |
+| `x86_64-unknown-linux-musl` | Linux x64，Alpine 等 musl 发行版 |
+| `x86_64-apple-darwin` | macOS Intel |
+| `aarch64-apple-darwin` | macOS Apple Silicon |
+
+宿主按**精确三元组**匹配归档；没有匹配平台时可改用下面的源码构建。
 
 ## 从源码构建安装
 
@@ -810,6 +828,39 @@ rpi --model deepseek/deepseek-flash -p "只回复 DS-OK"    # 不经过插件
   fish 的函数、`abbr`、别名、以及非导出变量都不会进入 bash 子进程。
 - **`poll` 是同步阻塞的**：宿主工具驱动没有 wake 回调，工具在 `poll` 内最多阻塞
   `waitSeconds`（≤120s）；因此不存在 Pending 分支，长命令会占住该次工具调用。
+
+## 桌面通知（`notify`）的平台差异
+
+通知是尽力而为的能力：**没有环境就不发，且不输出任何提示**。实现不做任何事前探测，
+直接用 `show()` 的 `Result` 驱动“失败即禁用”，一次失败后本进程内不再尝试。
+
+| 平台 | 探测 | 失败能否感知 | 能否撤回已发通知 |
+| --- | --- | --- | --- |
+| Linux / BSD | 不需要（`show()` 真连 D-Bus） | 能（`Err`） | 能（`NotificationHandle::close`） |
+| Windows | 不需要（winrt） | 能（`Err`） | 不能（后端无 `close`） |
+| macOS | 不需要 | **不能**（`show()` 恒返回 `Ok`） | **不能** |
+
+macOS 的 `notify-rust` 默认后端（`NSUserNotificationCenter`）有一个容易踩的语义：
+`show()` 只构造 handle **不发通知**，真正发送发生在 handle 的 `Drop` 里，且错误被丢弃。
+因此本插件在 macOS 上**不保存 handle**（丢弃即发送）：换来“能发”但**完全无法撤回**，
+且两次通知会叠加而不是互相替换。Linux/Windows 则保留 handle 以便替换/关闭。
+
+macOS 也不支持 `urgency`（优先级只是界面细节，不影响发送）。
+
+## 构建与分发
+
+| 项 | 说明 |
+| --- | --- |
+| 目标矩阵 | 5 个：Windows x64、Linux x64（gnu/musl）、macOS（Intel/Apple Silicon） |
+| 清单一致性 | `Cargo.toml` 的 `supported-targets`、`rpi-extension.json` 的 `targets`、
+`release.yml` 的构建矩阵三者必须一致（CI 不强制，靠人工核对） |
+| 安装匹配 | 宿主按**精确三元组**匹配；musl 与 gnu 是不同分发，不可互换 |
+
+> **musl 分发未经验证加载**：Linux musl 目标默认 `crt-static`，而静态 musl 的 `dlopen`
+> 是空桩（musl 官方邮件列表确认），宿主却靠 `libloading`（`dlopen`）加载插件。
+> 本项目的 musl 条目**尚未在任何 musl 宿主上实测过**（CI 只在 glibc runner 上编译）。
+> 若在 Alpine 等环境上出现插件未加载，请优先怀疑这一点，并改用 gnu 构建或
+> 用 `--build` 从源码编译。
 
 # 七、行为边界
 
