@@ -50,6 +50,12 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+    env:
+      # 固定宿主版本。不传版本时 install.sh/ps1 会请求
+      # api.github.com/.../releases/latest，而 runner 的共享 IP 很容易
+      # 被未认证限流（实测 403），导致冒烟与代码无关地变红。
+      # 显式版本号完全不碰该 API；升级宿主只需改这里。
+      RPI_HOST_VERSION: '0.27.1'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -60,12 +66,37 @@ jobs:
         run: cargo build --release --locked
       - name: Install rpi host (unix)
         if: runner.os != 'Windows'
-        run: curl -fsSL https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.sh | sh
+        run: |
+          set -euo pipefail
+          # raw.githubusercontent.com 本身也会抖动，给有限重试。
+          for attempt in 1 2 3; do
+            if curl -fsSL https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.sh \
+                 | sh -s -- --version "$RPI_HOST_VERSION"; then
+              exit 0
+            fi
+            echo "::warning::install.sh failed (attempt ${attempt}/3); retrying"
+            sleep $((attempt * 10))
+          done
+          echo "::error::could not install rpi host after 3 attempts"
+          exit 1
       - name: Install rpi host (windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 | iex
+          $ErrorActionPreference = 'Stop'
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            try {
+              irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 \
+                -OutFile install.ps1
+              ./install.ps1 -Version $env:RPI_HOST_VERSION
+              break
+            }
+            catch {
+              if ($attempt -eq 3) { throw }
+              Write-Warning "install.ps1 failed (attempt $attempt/3); retrying"
+              Start-Sleep -Seconds ($attempt * 10)
+            }
+          }
           # install.ps1 只打印“请手动加 PATH”的提示，不会改环境；
           # 而后续步骤在 bash 里调 `rpi`，不补路径就会 exit 127。
           # 写入 GITHUB_PATH 才对后续所有 step（含 shell: bash）生效。
