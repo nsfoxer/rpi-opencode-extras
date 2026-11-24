@@ -32,6 +32,8 @@ pub const SETTINGS_FILE_NAME: &str = "settings.json";
 pub const EXTRAS_KEY: &str = "opencodeExtras";
 
 /// 旧版 `msys2Bash` 的顶层键名（只读兼容）。
+/// 仅 Windows 的 `msys2_shell` 会读它，其他平台不编该模块。
+#[cfg(windows)]
 pub const LEGACY_MSYS2_KEY: &str = "msys2Bash";
 
 /// 各 feature 的开关。默认全部开启。
@@ -148,12 +150,16 @@ fn load_root() -> Option<Value> {
 }
 
 /// Shell 配置的当前键名：`opencodeExtras.bash`。
+#[cfg(windows)]
 pub const BASH_KEY: &str = "bash";
 
 /// 从 `settings.json` 根对象取出 shell 配置段。
 ///
 /// 新位置 `opencodeExtras.bash` 优先；随后兼容 `opencodeExtras.msys2Bash`
 /// 和旧顶层 `msys2Bash`，让升级中的用户不必立刻改配置。
+///
+/// 只有 Windows 的 `msys2_shell` 会用它；其他平台不编该函数。
+#[cfg(windows)]
 pub fn bash_section(root: &Value) -> Option<&Value> {
     let extras = root.get(EXTRAS_KEY);
     extras
@@ -236,6 +242,7 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
     #[test]
     fn bash_prefers_new_location_and_falls_back_to_legacy() {
         let new = json!({

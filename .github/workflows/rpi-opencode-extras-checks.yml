@@ -64,7 +64,12 @@ jobs:
       - name: Install rpi host (windows)
         if: runner.os == 'Windows'
         shell: pwsh
-        run: irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 | iex
+        run: |
+          irm https://raw.githubusercontent.com/bigfish1913/pi-rust/main/scripts/install.ps1 | iex
+          # install.ps1 只打印“请手动加 PATH”的提示，不会改环境；
+          # 而后续步骤在 bash 里调 `rpi`，不补路径就会 exit 127。
+          # 写入 GITHUB_PATH 才对后续所有 step（含 shell: bash）生效。
+          "$env:LOCALAPPDATA\Programs\rpi" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Stage only this build's library
         shell: bash
         run: |

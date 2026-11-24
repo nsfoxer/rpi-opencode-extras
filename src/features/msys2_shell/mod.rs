@@ -29,16 +29,12 @@ use std::sync::Arc;
 /// `msys2-bash` feature 的注册入口。
 ///
 /// 参数：`api` 宿主的插件 API 表。
-/// 返回：恒为 `0`——平台不符、配置缺失或无效都只是"不启用"，不属于插件加载失败。
+/// 返回：恒为 `0`——配置缺失或无效都只是“不启用”，不属于插件加载失败。
+///
+/// 平台限制在编译期完成（`features/mod.rs` 的 `#[cfg(windows)]`），
+/// 所以这里不需要运行期平台检查。
 pub fn register(api: &PluginApi) -> i32 {
-    // 第一步：平台检查。本 feature 依赖 MSYS2（Windows 专属：`taskkill /F /T` 杀进程树、
-    // `C:\msys64` 路径布局、`.exe` 后缀），非 Windows 平台直接不生效，
-    // 且不去读配置、不产生任何诊断噪音。
-    if !cfg!(target_os = "windows") {
-        return 0;
-    }
-
-    // 第二步：加载配置。没有配置段 = 未启用，保持内置 bash 行为。
+    // 第一步：加载配置。没有配置段 = 未启用，保持内置 bash 行为。
     let config = match config::load_config() {
         Ok(Some(config)) => config,
         // settings.json 不存在或没有 msys2Bash 段：静默跳过。

@@ -5,6 +5,11 @@
 
 pub mod deepseek_search;
 pub mod go_usage;
+// `msys2_shell` 是 Windows 专属能力：它依赖 MSYS2 的目录布局（`C:\msys64`）、
+// `taskkill /F /T` 杀进程树与 `.exe` 后缀，在 Linux/macOS 上没有对应物。
+// 因此在编译期整体排除，而不是“编译进来再运行期空转”：
+// 非 Windows 上不参与编译、不引入 `regex` 依赖、不跑那 89 个 Windows 路径语义的测试。
+#[cfg(windows)]
 pub mod msys2_shell;
 pub mod notify;
 pub mod provider;
@@ -25,6 +30,8 @@ pub static FEATURES: &[Feature] = &[
         name: "provider",
         register: provider::register,
     },
+    // 仅在 Windows 注册；其他平台连编都不编（见模块声明处的说明）。
+    #[cfg(windows)]
     Feature {
         name: "msys2-bash",
         register: msys2_shell::register,
