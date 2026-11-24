@@ -13,7 +13,7 @@ rpi 原生 Rust `cdylib` 插件，包含五个互相独立的能力：
 - 宿主：rpi `0.22.1+`（插件 ABI `4`；已在 rpi `0.24.0` Linux x86_64 上验证）
 - 产物：**单个** `librpi_opencode_extras.so` / `rpi_opencode_extras.dll` / `librpi_opencode_extras.dylib`，
   单个 `export_plugin!` 入口
-- 平台：Windows x64、Linux x64（glibc / musl）、macOS（Intel / Apple Silicon）
+- 平台：Windows x64、Linux x64（glibc）、macOS（Intel / Apple Silicon）
 - 依赖：`rpi-plugin-sdk = 0.22.1`（`provider` feature）、`rpi-ai = 0.22.1`、`serde_json`、`serde`、`regex`、`async-trait`、`url`、`ureq`（rustls）、`notify-rust`（桌面通知）
 - 不引入 `tokio` / `reqwest`（异步运行时与 provider HTTP 客户端都由宿主提供；
   `ureq` 仅供 `deepseek-search` 的同步网络调用，`notify-rust` 只在通知线程里使用）
@@ -353,11 +353,17 @@ rpi extension update rpi-opencode-extras
 | --- | --- |
 | `x86_64-pc-windows-msvc` | Windows x64 |
 | `x86_64-unknown-linux-gnu` | Linux x64，glibc（Ubuntu/Debian/Fedora 等默认） |
-| `x86_64-unknown-linux-musl` | Linux x64，Alpine 等 musl 发行版 |
 | `x86_64-apple-darwin` | macOS Intel |
 | `aarch64-apple-darwin` | macOS Apple Silicon |
 
 宿主按**精确三元组**匹配归档；没有匹配平台时可改用下面的源码构建。
+
+> **不提供 Linux musl 版本**：插件是 `cdylib`，必须能被宿主 `dlopen`，
+> 而 `x86_64-unknown-linux-musl` 默认 `crt-static`，rustc 在静态链接下
+> 直接拒绕产出 `cdylib`（`does not support these crate types`）。
+> 加之静态 musl 的 `dlopen` 本身是空桩，musl 与“可动态加载的插件”
+> 在原理上互斥。Alpine 等 musl 发行版请用源码构建 
+> （`cargo install --path .` 同样受限，建议在 glibc 环境编译后拷贝）。
 
 ## 从源码构建安装
 
@@ -851,16 +857,17 @@ macOS 也不支持 `urgency`（优先级只是界面细节，不影响发送）�
 
 | 项 | 说明 |
 | --- | --- |
-| 目标矩阵 | 5 个：Windows x64、Linux x64（gnu/musl）、macOS（Intel/Apple Silicon） |
+| 目标矩阵 | 4 个：Windows x64、Linux x64（gnu）、macOS（Intel/Apple Silicon） |
 | 清单一致性 | `Cargo.toml` 的 `supported-targets`、`rpi-extension.json` 的 `targets`、
 `release.yml` 的构建矩阵三者必须一致（CI 不强制，靠人工核对） |
-| 安装匹配 | 宿主按**精确三元组**匹配；musl 与 gnu 是不同分发，不可互换 |
+| 安装匹配 | 宿主按**精确三元组**匹配，不支持任何替代 |
 
-> **musl 分发未经验证加载**：Linux musl 目标默认 `crt-static`，而静态 musl 的 `dlopen`
-> 是空桩（musl 官方邮件列表确认），宿主却靠 `libloading`（`dlopen`）加载插件。
-> 本项目的 musl 条目**尚未在任何 musl 宿主上实测过**（CI 只在 glibc runner 上编译）。
-> 若在 Alpine 等环境上出现插件未加载，请优先怀疑这一点，并改用 gnu 构建或
-> 用 `--build` 从源码编译。
+> **为何没有 Linux musl**：`x86_64-unknown-linux-musl` 默认 `crt-static`，
+> rustc 在静态链接下无法产出 `cdylib`：
+> `error: cannot produce cdylib ... does not support these crate types`。
+> 这不是依赖或代码问题，而是 musl 静态链接与动态加载的根本冲突
+> （静态 musl 的 `dlopen` 是空桩）。插件必须能被 `libloading` 加载，
+> 因此 Linux 只发 gnu；宿主的 `install.sh` 在 glibc 发行版上也默认取 gnu。
 
 # 七、行为边界
 
